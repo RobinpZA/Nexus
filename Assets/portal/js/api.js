@@ -1,0 +1,92 @@
+/* ═══════════════════════════════════════════════════════════
+    Nexus — API Client
+   ═══════════════════════════════════════════════════════════ */
+
+const API = {
+    baseUrl: window.location.origin,
+
+    async _fetch(path, options = {}) {
+        try {
+            const res = await fetch(`${this.baseUrl}${path}`, {
+                headers: { 'Content-Type': 'application/json' },
+                ...options
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ message: res.statusText }));
+                throw new Error(err.message || `HTTP ${res.status}`);
+            }
+            return await res.json();
+        } catch (e) {
+            console.error(`API error [${path}]:`, e);
+            throw e;
+        }
+    },
+
+    // ── Modules ──
+    async getModules() {
+        return this._fetch('/api/modules');
+    },
+
+    async getModuleCommands(moduleName) {
+        return this._fetch(`/api/modules/${encodeURIComponent(moduleName)}/commands`);
+    },
+
+    // ── Commands ──
+    async searchCommands(query) {
+        const q = query ? `?search=${encodeURIComponent(query)}` : '';
+        return this._fetch(`/api/commands${q}`);
+    },
+
+    async getCommandParams(moduleName, commandName) {
+        return this._fetch(`/api/commands/${encodeURIComponent(moduleName)}/${encodeURIComponent(commandName)}/params`);
+    },
+
+    // ── Execute ──
+    async executeCommand(moduleName, commandName, parameters = {}) {
+        return this._fetch('/api/execute', {
+            method: 'POST',
+            body: JSON.stringify({
+                module: moduleName,
+                command: commandName,
+                parameters: parameters
+            })
+        });
+    },
+
+    // ── Health ──
+    async getHealth() {
+        return this._fetch('/api/health');
+    },
+
+    // ── Registry ──
+    async scanRegistry() {
+        return this._fetch('/api/registry/scan', { method: 'POST' });
+    },
+
+    // ── Settings ──
+    async getSettings() {
+        return this._fetch('/api/settings');
+    },
+
+    // ── Favourites ──
+    async getFavourites() {
+        return this._fetch('/api/favourites');
+    },
+
+    async addFavourite(moduleName, commandName) {
+        return this._fetch('/api/favourites', {
+            method: 'POST',
+            body: JSON.stringify({ module: moduleName, command: commandName })
+        });
+    },
+
+    // ── Recent ──
+    async getRecent() {
+        return this._fetch('/api/recent');
+    },
+
+    // ── Shutdown ──
+    async shutdown() {
+        return this._fetch('/api/shutdown', { method: 'POST' });
+    }
+};

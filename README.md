@@ -1,0 +1,166 @@
+<p align="center">
+	<img src="Assets/portal/img/logo.svg" alt="Nexus logo" width="120" />
+</p>
+
+# Nexus
+
+Central PowerShell module hub with a local web portal for discovering, importing, and invoking commands across your private modules.
+
+## Why Nexus
+
+- One place to register and manage internal PowerShell modules
+- Local browser portal for command discovery and execution
+- CLI-first workflow with exported functions and a short alias
+- JSON-based settings and module registry with local override support
+
+## Requirements
+
+- PowerShell 7.2 or newer
+- Windows, macOS, or Linux
+
+## Quick Start
+
+```powershell
+# From the repository root
+Import-Module .\Nexus.psd1 -Force
+
+# Start the portal (browser opens by default)
+Start-Nexus
+
+# Alias for Start-Nexus
+ops
+```
+
+>[!TIP]
+> Use `Start-Nexus -Scan` to discover modules from configured scan roots during startup.
+
+## Auto-Run On PowerShell Launch
+
+If you want Nexus to start automatically whenever you open PowerShell, use the built-in helper command:
+
+```powershell
+# From the repository root
+Import-Module .\Nexus.psd1 -Force
+
+# All hosts (Windows Terminal, VS Code terminal, etc.)
+Enable-NexusAutoStart
+
+# Or VS Code terminal only
+Enable-NexusAutoStart -Scope CurrentHost
+```
+
+This writes an idempotent profile block that starts Nexus in a background PowerShell process only when Nexus is not already running.
+
+### Option A: All PowerShell Hosts (Recommended)
+
+Use `CurrentUserAllHosts` so it runs in Windows Terminal, VS Code terminal, and other hosts.
+
+```powershell
+if (!(Test-Path $PROFILE.CurrentUserAllHosts)) {
+	New-Item -ItemType File -Path $PROFILE.CurrentUserAllHosts -Force | Out-Null
+}
+notepad $PROFILE.CurrentUserAllHosts
+```
+
+Add this to the opened profile file:
+
+```powershell
+# Auto-start Nexus once if not already running
+$nexusRoot = "<path-to-your-nexus-repo>"
+$modulePath = Join-Path $nexusRoot "Nexus.psd1"
+
+if (Test-Path $modulePath) {
+	$alreadyRunning = $false
+	try {
+		$null = Invoke-RestMethod -Uri "http://localhost:8090/api/health" -TimeoutSec 1
+		$alreadyRunning = $true
+	} catch {
+		$alreadyRunning = $false
+	}
+
+	if (-not $alreadyRunning) {
+		$cmd = "Import-Module '$modulePath' -Force; Start-Nexus -NoBrowser"
+		Start-Process pwsh -WindowStyle Hidden -ArgumentList "-NoLogo", "-NoProfile", "-Command", $cmd | Out-Null
+	}
+}
+```
+
+### Option B: VS Code Terminal Only
+
+Use `CurrentUserCurrentHost` instead:
+
+```powershell
+if (!(Test-Path $PROFILE.CurrentUserCurrentHost)) {
+	New-Item -ItemType File -Path $PROFILE.CurrentUserCurrentHost -Force | Out-Null
+}
+notepad $PROFILE.CurrentUserCurrentHost
+```
+
+Paste the same auto-start block into that profile.
+
+### Notes
+
+- `Start-Nexus` is a blocking listener, so starting it in a separate process keeps your current terminal usable.
+- Remove `-NoBrowser` if you want the portal tab to open automatically on startup.
+- If you changed `defaultPort` in settings, update the health URL accordingly.
+
+## Exported Commands
+
+| Command | Description |
+|---|---|
+| `Start-Nexus` | Start the local Nexus HTTP listener and portal |
+| `Stop-Nexus` | Stop the running Nexus listener |
+| `Enable-NexusAutoStart` | Add/update a profile block to auto-start Nexus when PowerShell launches |
+| `Get-OpsModule` | List modules in the registry |
+| `Import-OpsModule` | Import a registered module |
+| `Get-OpsCommand` | List and search commands across registered modules |
+| `Invoke-OpsCommand` | Invoke a registered command with parameters |
+| `Register-OpsModule` | Register a module path and metadata |
+| `Unregister-OpsModule` | Remove a module from the registry |
+| `Update-OpsRegistry` | Scan and synchronize registry entries |
+
+## Configuration
+
+Nexus reads configuration from:
+
+- `Config/settings.json` (portal behavior, ports, scan settings)
+- `Config/modules.json` (module registry)
+
+Local overrides are supported and take precedence when present:
+
+- `Config/settings.local.json`
+- `Config/modules.local.json`
+
+Common defaults include:
+
+- `defaultPort`: `8090`
+- `portRange`: `8090-8099`
+- `openBrowserOnStart`: `true`
+- `scanOnStartup`: `false`
+
+## Build, Test, and Analyze
+
+```powershell
+# Run analyzer + tests + build
+.\build.ps1 -Task CI
+
+# Individual tasks
+.\build.ps1 -Task Analyze
+.\build.ps1 -Task Test
+.\build.ps1 -Task Build
+.\build.ps1 -Task Clean
+```
+
+## Project Layout
+
+```text
+Public/   Exported user commands
+Private/  Internal implementation
+Assets/   Portal UI (HTML/CSS/JS)
+Config/   Settings and module registry
+Tests/    Pester test suite
+```
+
+## Author
+
+Robin Pieterse (Turrito Networks)

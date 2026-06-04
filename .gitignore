@@ -1,0 +1,7 @@
+build/
+Logs/
+Output/
+*.log
+.vscode/settings.json
+TestResults.xml
+Config/*.local.json

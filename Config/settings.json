@@ -1,0 +1,27 @@
+{
+  "defaultPort": 8090,
+  "portRange": [
+    8090,
+    8099
+  ],
+  "openBrowserOnStart": true,
+  "logLevel": "Info",
+  "logRetentionDays": 30,
+  "scanOnStartup": false,
+  "scanRoots": [],
+  "scanDepth": 2,
+  "scanExclude": [
+    "node_modules",
+    ".git",
+    "bin",
+    "obj",
+    "build",
+    "Tests"
+  ],
+  "scanPublishedModules": false,
+  "publishedModulePaths": [],
+  "theme": "dark",
+  "favouriteCommands": [],
+  "recentCommands": [],
+  "maxRecentCommands": 20
+}
