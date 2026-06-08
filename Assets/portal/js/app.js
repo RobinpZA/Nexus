@@ -1,4 +1,4 @@
-﻿/* Nexus — Main Application v1.1 */
+/* Nexus — Main Application v1.1 */
 const App = {
     state: { modules: [], health: null, appVersion: null },
     async init() {
@@ -220,4 +220,95 @@ App.renderModuleDetail = async function(el, moduleName, preloadedData) {
             : Components.emptyState('No Commands', 'Module does not export commands.')
         )
     }`;
+};
+
+// ── Smart Sync/Async Command Execution ──
+App.runCommand = async function(mn, cn) {
+    const btn = document.getElementById('runBtn');
+    const status = document.getElementById('runStatus');
+    const oa = document.getElementById('outputArea');
+
+    const params = {};
+    document.querySelectorAll('[data-param]').forEach(i => {
+        const n = i.dataset.param, t = i.dataset.type;
+        if (t === 'switch') { if (i.checked) params[n] = true; }
+        else { const v = i.value.trim(); if (v) params[n] = v; }
+    });
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Running...';
+    status.textContent = 'Executing...';
+    status.className = 'run-status running';
+    status.style.color = '';
+
+    try {
+        const response = await API.executeCommand(mn, cn, params);
+
+        if (response.mode === 'sync' || response.output) {
+            // ── Synchronous result (connection commands) ──
+            oa.innerHTML = Components.outputConsole(response.output, response.durationMs);
+            if (response.success) {
+                status.textContent = `✓ Connected (${response.durationMs}ms)`;
+                status.style.color = 'var(--success)';
+                Components.toast('Success', 'success');
+            } else {
+                status.textContent = '✗ Failed';
+                status.style.color = 'var(--error)';
+                Components.toast('Failed', 'error');
+            }
+        } else if (response.mode === 'async' && response.jobId) {
+            // ── Async: poll for results ──
+            status.textContent = 'Running in background...';
+            const result = await App.pollJob(response.jobId, status, oa);
+            if (result) {
+                oa.innerHTML = Components.outputConsole(result.output, result.durationMs);
+                if (result.success) {
+                    status.textContent = `✓ Completed (${result.durationMs}ms)`;
+                    status.style.color = 'var(--success)';
+                    Components.toast('Success', 'success');
+                } else {
+                    status.textContent = '✗ Failed';
+                    status.style.color = 'var(--error)';
+                    Components.toast('Failed', 'error');
+                }
+            }
+        } else {
+            // Unknown response shape — show raw
+            oa.innerHTML = Components.outputConsole([{stream:'Info', message: JSON.stringify(response)}]);
+        }
+    } catch (e) {
+        oa.innerHTML = Components.outputConsole([{ stream: 'Error', message: e.message }]);
+        status.textContent = `✗ ${e.message}`;
+        status.style.color = 'var(--error)';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '▶ Run Command';
+    }
+};
+
+App.pollJob = async function(jobId, statusEl, outputEl) {
+    let polls = 0;
+    const maxPoll = 600;  // 10 min timeout
+
+    while (polls < maxPoll) {
+        await new Promise(r => setTimeout(r, 1000));
+        polls++;
+
+        try {
+            const data = await API._fetch(`/api/jobs/${jobId}`);
+
+            if (data.status === 'running') {
+                if (statusEl) statusEl.textContent = `Running... ${data.elapsed || polls}s`;
+                continue;
+            }
+
+            // Completed or failed
+            return data;
+        } catch (e) {
+            if (polls > 5) {
+                return { success: false, output: [{ stream: 'Error', message: `Lost connection to job: ${e.message}` }], durationMs: 0 };
+            }
+        }
+    }
+    return { success: false, output: [{ stream: 'Error', message: 'Job timed out (10 min)' }], durationMs: 0 };
 };

@@ -104,6 +104,21 @@ Paste the same auto-start block into that profile.
 - Remove `-NoBrowser` if you want the portal tab to open automatically on startup.
 - If you changed `defaultPort` in settings, update the health URL accordingly.
 
+## Execution Model
+
+Nexus runs module commands in isolated execution contexts so modules can keep their own authentication state and avoid DLL conflicts.
+
+- Most modules run in a persistent runspace for faster repeated execution.
+- Modules that depend on conflicting ecosystems such as Microsoft Graph, Exchange Online, or Teams are automatically moved to process isolation.
+- Async commands return immediately with a job id, and the portal polls job status until the result is ready.
+- Only one async command can run at a time for a given module runspace to avoid pipeline collisions.
+
+You can inspect async job progress through the portal API:
+
+```text
+GET /api/jobs/{id}
+```
+
 ## Exported Commands
 
 | Command | Description |

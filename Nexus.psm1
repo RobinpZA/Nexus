@@ -27,6 +27,8 @@ try {
 }
 $script:ImportedModules = @{}
 $script:HubLogSession   = @()
+$script:BackgroundJobs  = @{}
+$script:ModuleRunspaces  = @{}
 
 # Ensure Logs directory exists
 if (-not (Test-Path $script:LogDir)) {
@@ -51,3 +53,5 @@ Export-ModuleMember -Function $Public.BaseName
 # Convenience alias
 Set-Alias -Name 'ops' -Value 'Start-Nexus'
 Export-ModuleMember -Alias 'ops'
+
+

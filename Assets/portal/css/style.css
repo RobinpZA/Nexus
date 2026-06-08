@@ -648,3 +648,7 @@ body::before {
         scroll-behavior: auto !important;
     }
 }
+
+/* Async job running animation */
+.run-status.running { color: var(--accent); animation: pulse-running 1.5s ease-in-out infinite; }
+@keyframes pulse-running { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
