@@ -20,7 +20,7 @@ const CommandsUI = {
             html += '<h4>🔌 Connect First</h4>';
             html += '<div class="quickstart-commands">';
             conn.forEach(cmd => {
-                html += `<button class="quickstart-cmd connection" onclick="App.navigate('#/commands/${encodeURIComponent(moduleName)}/${encodeURIComponent(cmd)}')" title="Connection command">
+                html += `<button class="quickstart-cmd connection" data-nav="${Components.navTarget('commands', moduleName, cmd)}" title="Connection command">
                     <span class="quickstart-verb">Connect</span>
                     <span class="quickstart-name">${Components.esc(cmd)}</span>
                 </button>`;
@@ -35,7 +35,7 @@ const CommandsUI = {
             primary.forEach(cmd => {
                 const verb = cmd.match(/^([A-Za-z]+)-/);
                 const verbLabel = verb ? verb[1] : 'Run';
-                html += `<button class="quickstart-cmd primary" onclick="App.navigate('#/commands/${encodeURIComponent(moduleName)}/${encodeURIComponent(cmd)}')" title="Primary action">
+                html += `<button class="quickstart-cmd primary" data-nav="${Components.navTarget('commands', moduleName, cmd)}" title="Primary action">
                     <span class="quickstart-verb">${Components.esc(verbLabel)}</span>
                     <span class="quickstart-name">${Components.esc(cmd)}</span>
                 </button>`;
@@ -58,7 +58,7 @@ const CommandsUI = {
             const cmdRows = cat.commands.map(cmd => {
                 const desc = (cmd.description || (descriptions && descriptions[cmd.name])) || '';
                 const descHtml = desc ? `<span class="cmd-desc">${Components.esc(desc)}</span>` : '';
-                return `<div class="cmd-row" onclick="App.navigate('#/commands/${encodeURIComponent(moduleName)}/${encodeURIComponent(cmd.name)}')">
+                return `<div class="cmd-row" data-nav="${Components.navTarget('commands', moduleName, cmd.name)}">
                     <span class="cmd-name-cat">${Components.esc(cmd.name)}</span>
                     ${descHtml}
                 </div>`;
@@ -66,7 +66,7 @@ const CommandsUI = {
 
             html += `
             <div class="cmd-category ${isCollapsed}">
-                <div class="cmd-category-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <div class="cmd-category-header" data-action="toggle-category">
                     <span class="cmd-category-icon">${cat.icon || '📦'}</span>
                     <span class="cmd-category-label">${Components.esc(cat.label)}</span>
                     <span class="cmd-category-count">${cat.count}</span>
@@ -82,7 +82,7 @@ const CommandsUI = {
 
     // ── Load Descriptions Button ──
     loadDescriptionsButton(moduleName) {
-        return `<button class="btn btn-sm" id="loadDescBtn" onclick="CommandsUI.fetchDescriptions('${Components.esc(moduleName)}')">
+        return `<button class="btn btn-sm" id="loadDescBtn" data-action="load-desc" data-module="${Components.esc(moduleName)}">
             📝 Load Descriptions
         </button>`;
     },
@@ -94,7 +94,7 @@ const CommandsUI = {
         try {
             const data = await API.getModuleCommands(moduleName + '?describe=true');
             // Re-render the module detail with descriptions
-            Components.toast(`Loaded ${Object.keys(data.commands.filter(c => c.description)).length} descriptions`, 'success');
+            Components.toast(`Loaded ${data.commands.filter(c => c.description).length} descriptions`, 'success');
             // Trigger a re-render
             App.renderModuleDetail(document.getElementById('content'), moduleName, data);
         } catch(e) {

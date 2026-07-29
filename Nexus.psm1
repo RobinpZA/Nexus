@@ -26,7 +26,9 @@ try {
     $script:NexusVersion = '0.0.0'
 }
 $script:ImportedModules = @{}
-$script:HubLogSession   = @()
+$script:MetadataCache   = @{}   # manifest path -> parsed metadata, keyed on file stamp
+$script:LogLevel        = 'Info'   # overridden from settings at startup
+$script:HubLogSession   = [System.Collections.Generic.List[PSCustomObject]]::new()
 $script:BackgroundJobs  = @{}
 $script:ModuleRunspaces  = @{}
 

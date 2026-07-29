@@ -1,7 +1,7 @@
 ﻿function Get-PortalSettings {
     param([Parameter(Mandatory)][System.Net.HttpListenerContext]$Context)
     try {
-        $settings = Get-Content $script:SettingsFile -Raw | ConvertFrom-Json
+        $settings = Read-HubSettings
         $hubVersion = if ($script:NexusVersion) { [string]$script:NexusVersion } else { 'unknown' }
         $settings | Add-Member -NotePropertyName hubVersion -NotePropertyValue $hubVersion -Force
         Write-JsonResponse -Context $Context -Data $settings

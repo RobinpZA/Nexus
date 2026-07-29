@@ -1,12 +1,14 @@
 ﻿function Invoke-PortalRegistryScan {
     param([Parameter(Mandatory)][System.Net.HttpListenerContext]$Context)
-    $settings = Get-Content $script:SettingsFile -Raw | ConvertFrom-Json
+    $settings = Read-HubSettings
     $scanRoots = @($settings.scanRoots); $scanDepth = $settings.scanDepth; $scanExclude = @($settings.scanExclude)
     $scanPublished = [bool]$settings.scanPublishedModules; $publishedPaths = @($settings.publishedModulePaths)
     if ($scanRoots.Count -eq 0 -and -not $scanPublished) {
         Write-ErrorResponse -Context $Context -StatusCode 400 -Message "No scan roots configured and published scanning is disabled"; return
     }
     try {
+        # A scan may add, move or remove modules — start from a clean cache.
+        Clear-MetadataCache
         $scanParams = @{ ScanRoots = $scanRoots; MaxDepth = $scanDepth; Exclude = $scanExclude }
         if ($scanPublished) { $scanParams['IncludePublished'] = $true; if ($publishedPaths.Count -gt 0) { $scanParams['PublishedModulePaths'] = $publishedPaths } }
         $discovered = Invoke-ModuleScan @scanParams

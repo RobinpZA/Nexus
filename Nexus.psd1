@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Nexus.psm1'
-    ModuleVersion     = '1.1.0'
+    ModuleVersion     = '1.2.0'
     GUID              = '86147d2b-ae69-4971-8b44-06af60f8418b'
     Author            = 'Robin Pieterse'
     CompanyName       = 'Turrito Networks'

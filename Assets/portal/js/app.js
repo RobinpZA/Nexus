@@ -3,6 +3,9 @@ const App = {
     state: { modules: [], health: null, appVersion: null },
     async init() {
         window.addEventListener('hashchange', () => this.route());
+        document.addEventListener('click', e => this.handleClick(e));
+        document.addEventListener('input', e => { const t=e.target.closest('[data-on-input]'); if(t) this.handleInput(t.dataset.onInput); });
+        document.addEventListener('change', e => { const t=e.target.closest('[data-on-change]'); if(t) this.handleInput(t.dataset.onChange); });
         document.addEventListener('keydown', e => { if((e.ctrlKey||e.metaKey)&&e.key==='k'){e.preventDefault();document.getElementById('globalSearch').focus();} if(e.key==='Escape')document.getElementById('globalSearch').blur(); });
         const si=document.getElementById('globalSearch'); let st;
         si.addEventListener('input',()=>{clearTimeout(st);st=setTimeout(()=>{const q=si.value.trim();if(q.length>0)window.location.hash=`#/commands?search=${encodeURIComponent(q)}`;},400);});
@@ -40,18 +43,52 @@ const App = {
         else content.innerHTML=Components.emptyState('Not Found','Page does not exist.');
     },
     navigate(hash) { window.location.hash=hash; },
+    // Single delegated handler: rendered markup carries data-nav / data-action instead
+    // of inline onclick handlers, which cannot safely embed values from the URL or API.
+    handleClick(e) {
+        const target=e.target instanceof Element?e.target:null;
+        if(!target) return;
+        const action=target.closest('[data-action]');
+        if(action){
+            const d=action.dataset;
+            switch(d.action){
+                case 'run': this.runCommand(d.module,d.command); return;
+                case 'fav': this.addFavourite(d.module,d.command); return;
+                case 'unfav': this.removeFavourite(d.module,d.command); return;
+                case 'remove-scan-root': this.removeScanRoot(d.path); return;
+                case 'add-scan-root': this.addScanRoot(); return;
+                case 'load-desc': CommandsUI.fetchDescriptions(d.module); return;
+                case 'disconnect-module': this.disconnectModule(d.module); return;
+                case 'scan': this.scanRegistry(); return;
+                case 'shutdown': this.shutdown(); return;
+                case 'copy-output': Components.copyOutput(); return;
+                case 'toggle-category': { const c=action.closest('.cmd-category'); if(c) c.classList.toggle('collapsed'); return; }
+            }
+        }
+        const nav=target.closest('[data-nav]');
+        if(nav) this.navigate(nav.dataset.nav);
+    },
+    handleInput(name){
+        switch(name){
+            case 'filter-modules': this.filterModules(); return;
+            case 'search-commands': this.debounceCommandSearch(); return;
+            case 'toggle-published': this.togglePublished(); return;
+        }
+    },
     groupBySource(modules) { return { custom:modules.filter(m=>(m.source||'custom')==='custom'), published:modules.filter(m=>m.source==='published') }; },
 
     async renderDashboard(el) {
         el.innerHTML=Components.loading(); await this.loadModules(); await this.loadHealth();
         const mods=this.state.modules, health=this.state.health||{}, healthy=health.healthy||0, total=health.total||mods.length, {custom,published}=this.groupBySource(mods);
         let recentHtml=''; try { const rd=await API.getRecent(); const recent=rd.recent||[]; if(recent.length>0) recentHtml=`<div class="section-title">Recent Commands</div><div class="table-container"><ul class="recent-list">${recent.slice(0,10).map(r=>Components.recentItem(r)).join('')}</ul></div>`; } catch(e){}
+        let favHtml=''; try { const fd=await API.getFavourites(); const favs=fd.favourites||[]; if(favs.length>0) favHtml=`<div class="section-title">Favourites</div><div class="table-container"><ul class="recent-list">${favs.map(f=>Components.favouriteItem(f)).join('')}</ul></div>`; } catch(e){}
         const svgM='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>';
         const svgO='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
         const svgC='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
         const svgP='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
         el.innerHTML=`<div class="page-header"><h1>Dashboard</h1><p>Overview of your registered PowerShell modules</p></div>
         <div class="stats-grid">${Components.statCard(total,'Total Modules','blue',svgM)}${Components.statCard(custom.length,'Custom','yellow',svgC)}${Components.statCard(published.length,'Published','green',svgP)}${Components.statCard(healthy,'Healthy','green',svgO)}</div>
+        ${favHtml}
         ${recentHtml}
         ${custom.length>0?Components.groupHeader('Custom Modules',custom.length)+`<div class="module-grid">${custom.map(m=>Components.moduleCard(m)).join('')}</div>`:''}
         ${published.length>0?`<div style="margin-top:32px"></div>`+Components.groupHeader('Published Modules',published.length)+`<div class="module-grid">${published.map(m=>Components.moduleCard(m)).join('')}</div>`:''}
@@ -63,11 +100,11 @@ const App = {
         const mods=this.state.modules, cats=['All',...new Set(mods.map(m=>m.category).filter(Boolean))];
         el.innerHTML=`<div class="page-header"><h1>Modules</h1><p>Browse and manage your registered PowerShell modules</p></div>
         <div class="filters-bar">
-            <input type="text" class="filter-input" id="moduleFilter" placeholder="Filter modules..." oninput="App.filterModules()">
-            <select class="filter-select" id="categoryFilter" onchange="App.filterModules()">${cats.map(c=>`<option value="${c}">${c}</option>`).join('')}</select>
-            <select class="filter-select" id="sourceFilter" onchange="App.filterModules()"><option value="All">All Sources</option><option value="custom">Custom</option><option value="published">Published</option></select>
-            <select class="filter-select" id="groupBySelect" onchange="App.filterModules()"><option value="none">No Grouping</option><option value="source" selected>Group by Source</option><option value="category">Group by Category</option></select>
-            <button class="btn" onclick="App.scanRegistry()">🔍 Scan</button>
+            <input type="text" class="filter-input" id="moduleFilter" placeholder="Filter modules..." data-on-input="filter-modules">
+            <select class="filter-select" id="categoryFilter" data-on-change="filter-modules">${cats.map(c=>`<option value="${Components.esc(c)}">${Components.esc(c)}</option>`).join('')}</select>
+            <select class="filter-select" id="sourceFilter" data-on-change="filter-modules"><option value="All">All Sources</option><option value="custom">Custom</option><option value="published">Published</option></select>
+            <select class="filter-select" id="groupBySelect" data-on-change="filter-modules"><option value="none">No Grouping</option><option value="source" selected>Group by Source</option><option value="category">Group by Category</option></select>
+            <button class="btn" data-action="scan">🔍 Scan</button>
         </div><div id="moduleGrid"></div>`;
         this.filterModules();
     },
@@ -85,29 +122,10 @@ const App = {
     },
     async scanRegistry() { Components.toast('Scanning...','info'); try { const r=await API.scanRegistry(); Components.toast(`Done: ${r.added} added, ${r.updated} updated`,'success'); await this.loadModules(); this.route(); } catch(e) { Components.toast(`Failed: ${e.message}`,'error'); } },
 
-    async renderModuleDetail(el,moduleName) {
-        el.innerHTML=Components.loading(); const mod=this.state.modules.find(m=>m.name===moduleName);
-        if(!mod){el.innerHTML=Components.emptyState('Not Found',`Module "${moduleName}" not in registry.`);return;}
-        let commands=[]; try { const d=await API.getModuleCommands(moduleName); commands=d.commands||[]; } catch(e){}
-        const icon=Components.getIcon(mod.icon), tags=(mod.tags||[]).map(t=>`<span class="tag">${Components.esc(t)}</span>`).join(''), deps=(mod.dependencies||[]).map(d=>`<span class="tag">${Components.esc(d)}</span>`).join('')||'<span style="color:var(--text-muted)">None</span>';
-        el.innerHTML=`${Components.breadcrumb([{label:'Modules',href:'#/modules'},{label:moduleName}])}
-        <div class="page-header"><div style="display:flex;align-items:center;gap:12px"><div class="module-icon" style="font-size:24px">${icon}</div><div><h1>${Components.esc(moduleName)}</h1><p>${Components.esc(mod.description||'')}</p></div>${Components.sourceBadge(mod.source)}<span class="status-dot ${mod.status||'unknown'}"></span></div></div>
-        <div class="settings-section"><h3>Module Info</h3>
-        <div class="settings-row"><label>Version</label><span class="value">${Components.esc(mod.version)}</span></div>
-        <div class="settings-row"><label>Category</label><span class="value">${Components.esc(mod.category)}</span></div>
-        <div class="settings-row"><label>Author</label><span class="value">${Components.esc(mod.author)}</span></div>
-        <div class="settings-row"><label>Source</label><span class="value">${Components.esc(mod.source||'custom')}</span></div>
-        <div class="settings-row"><label>Entry Command</label><span class="value">${Components.esc(mod.entryCommand||'-')}</span></div>
-        <div class="settings-row"><label>Tags</label><div class="module-tags">${tags}</div></div>
-        <div class="settings-row"><label>Dependencies</label><div class="module-tags">${deps}</div></div></div>
-        <div class="section-title">Commands (${commands.length})</div>
-        ${commands.length>0?`<div class="table-container"><table><thead><tr><th>Command</th><th>Module</th><th>Category</th><th>Type</th><th>Params</th></tr></thead><tbody>${commands.map(c=>Components.commandRow(c)).join('')}</tbody></table></div>`:Components.emptyState('No Commands','Module does not export commands or could not be imported.')}`;
-    },
-
     async renderCommands(el,sq) {
         el.innerHTML=Components.loading(); let cmds=[]; try { const d=await API.searchCommands(sq); cmds=d.results||[]; } catch(e){}
         el.innerHTML=`<div class="page-header"><h1>Commands</h1><p>Search commands across all modules</p></div>
-        <div class="filters-bar"><input type="text" class="filter-input" id="cmdSearchInput" placeholder="Search commands..." value="${Components.esc(sq)}" oninput="App.debounceCommandSearch()"></div>
+        <div class="filters-bar"><input type="text" class="filter-input" id="cmdSearchInput" placeholder="Search commands..." value="${Components.esc(sq)}" data-on-input="search-commands"></div>
         ${cmds.length>0?`<div class="table-container"><table><thead><tr><th>Command</th><th>Module</th><th>Category</th><th>Type</th><th>Params</th></tr></thead><tbody>${cmds.map(c=>Components.commandRow(c)).join('')}</tbody></table></div><p style="margin-top:12px;font-size:12px;color:var(--text-muted)">${cmds.length} command(s)</p>`:Components.emptyState('No Commands',sq?`No match for "${sq}".`:'Type a search term.')}`;
     },
     _cst:null, debounceCommandSearch(){clearTimeout(this._cst);this._cst=setTimeout(()=>{const q=document.getElementById('cmdSearchInput').value.trim();window.location.hash=q?`#/commands?search=${encodeURIComponent(q)}`:'#/commands';},400);},
@@ -120,18 +138,24 @@ const App = {
         <div class="cmd-meta"><span>Module: <strong>${Components.esc(mn)}</strong></span><span>Parameters: <strong>${params.length}</strong></span></div>
         ${pd.synopsis?`<p style="color:var(--text-secondary);margin-bottom:24px">${Components.esc(pd.synopsis)}</p>`:''}
         ${params.length>0?`<div class="param-section"><h3>Parameters</h3>${params.map(p=>Components.parameterField(p)).join('')}</div>`:''}
-        <div class="run-bar"><button class="btn btn-primary" id="runBtn" onclick="App.runCommand('${mn}','${cn}')">▶ Run Command</button><button class="btn" onclick="App.addFavourite('${mn}','${cn}')">⭐ Favourite</button><span class="run-status" id="runStatus"></span></div>
+        <div class="run-bar"><button class="btn btn-primary" id="runBtn" data-action="run" data-module="${Components.esc(mn)}" data-command="${Components.esc(cn)}">▶ Run Command</button><button class="btn" data-action="fav" data-module="${Components.esc(mn)}" data-command="${Components.esc(cn)}">⭐ Favourite</button><span class="run-status" id="runStatus"></span></div>
         <div id="outputArea">${Components.outputConsole(null)}</div>`;
     },
-    async runCommand(mn,cn) {
-        const btn=document.getElementById('runBtn'),status=document.getElementById('runStatus'),oa=document.getElementById('outputArea'),params={};
-        document.querySelectorAll('[data-param]').forEach(i=>{const n=i.dataset.param,t=i.dataset.type;if(t==='switch'){if(i.checked)params[n]=true;}else{const v=i.value.trim();if(v)params[n]=v;}});
-        btn.disabled=true;btn.textContent='⏳ Running...';status.textContent='Executing...';status.className='run-status running';
-        try{const r=await API.executeCommand(mn,cn,params);oa.innerHTML=Components.outputConsole(r.output,r.durationMs);if(r.success){status.textContent=`✓ ${r.durationMs}ms`;status.style.color='var(--success)';Components.toast('Success','success');}else{status.textContent=`✗ Failed`;status.style.color='var(--error)';Components.toast('Failed','error');}}
-        catch(e){oa.innerHTML=Components.outputConsole([{stream:'Error',message:e.message}]);status.textContent=`✗ ${e.message}`;status.style.color='var(--error)';}
-        finally{btn.disabled=false;btn.textContent='▶ Run Command';}
+    async refreshConnection(moduleName){
+        const el=document.getElementById('connectionPanel');
+        if(!el) return;
+        try{ const data=await API.getModuleConnection(moduleName); el.outerHTML=Components.connectionPanel(moduleName,data); }
+        catch(e){ /* leave the placeholder in place */ }
+    },
+    async disconnectModule(moduleName){
+        try{
+            await API.disconnectModule(moduleName);
+            Components.toast('Signed out','success');
+            await this.refreshConnection(moduleName);
+        }catch(e){ Components.toast(e.message,'error'); }
     },
     async addFavourite(mn,cn){try{await API.addFavourite(mn,cn);Components.toast(`Added ${cn}`,'success');}catch(e){Components.toast(e.message,'error');}},
+    async removeFavourite(mn,cn){try{await API.removeFavourite(mn,cn);Components.toast(`Removed ${cn}`,'success');if(window.location.hash==='#/'||window.location.hash==='#'||!window.location.hash)this.route();}catch(e){Components.toast(e.message,'error');}},
 
     async renderSettings(el) {
         el.innerHTML=Components.loading(); let settings={}; try{settings=await API.getSettings();}catch(e){}
@@ -152,11 +176,11 @@ const App = {
         <div class="settings-row"><label>Scan Depth</label><span class="value">${settings.scanDepth||2}</span></div>
         <div style="margin-top:16px"><label style="font-size:13px;color:var(--text-secondary);display:block;margin-bottom:8px">Scan Roots</label>
         <ul class="scan-root-list" id="scanRootList">${sr||'<li style="color:var(--text-muted);padding:8px">No scan roots configured</li>'}</ul></div>
-        <div style="margin-top:12px;display:flex;gap:8px;align-items:center"><input type="text" class="form-control" id="newScanRoot" placeholder="C:\\Path\\To\\Modules" style="flex:1"><button class="btn btn-primary" onclick="App.addScanRoot()">+ Add Path</button></div>
-        <div style="margin-top:20px"><button class="btn btn-primary" onclick="App.scanRegistry()">🔍 Scan Now</button></div></div>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center"><input type="text" class="form-control" id="newScanRoot" placeholder="C:\\Path\\To\\Modules" style="flex:1"><button class="btn btn-primary" data-action="add-scan-root">+ Add Path</button></div>
+        <div style="margin-top:20px"><button class="btn btn-primary" data-action="scan">🔍 Scan Now</button></div></div>
         <div class="settings-section"><h3>Published Module Scanning</h3>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">Enable to discover modules installed from the PowerShell Gallery (PSModulePath).</p>
-        <div class="settings-row"><label>Include Published Modules</label><div class="form-check" style="margin:0"><input type="checkbox" id="publishedToggle" ${pc} onchange="App.togglePublished()"><label for="publishedToggle">${settings.scanPublishedModules?'Enabled':'Disabled'}</label></div></div></div>
+        <div class="settings-row"><label>Include Published Modules</label><div class="form-check" style="margin:0"><input type="checkbox" id="publishedToggle" ${pc} data-on-change="toggle-published"><label for="publishedToggle">${settings.scanPublishedModules?'Enabled':'Disabled'}</label></div></div></div>
         <div class="settings-section"><h3>Registry</h3>
         <div class="settings-row"><label>Registered Modules</label><span class="value">${this.state.modules.length}</span></div>
         <div class="settings-row"><label>Custom</label><span class="value">${this.state.modules.filter(m=>(m.source||'custom')==='custom').length}</span></div>
@@ -171,8 +195,7 @@ const App = {
 };
 document.addEventListener('DOMContentLoaded',()=>App.init());
 
-// ── Override renderModuleDetail to use categorized commands ──
-const _origRenderModuleDetail = App.renderModuleDetail.bind(App);
+// ── Module detail: categorized commands + quick start ──
 App.renderModuleDetail = async function(el, moduleName, preloadedData) {
     el.innerHTML = Components.loading();
     const mod = this.state.modules.find(m => m.name === moduleName);
@@ -199,6 +222,8 @@ App.renderModuleDetail = async function(el, moduleName, preloadedData) {
 
     ${CommandsUI.quickStartPanel(quickStart, moduleName)}
 
+    ${Components.connectionPanel(moduleName, null)}
+
     <div class="settings-section"><h3>Module Info</h3>
         <div class="settings-row"><label>Version</label><span class="value">${Components.esc(mod.version)}</span></div>
         <div class="settings-row"><label>Category</label><span class="value">${Components.esc(mod.category)}</span></div>
@@ -220,6 +245,9 @@ App.renderModuleDetail = async function(el, moduleName, preloadedData) {
             : Components.emptyState('No Commands', 'Module does not export commands.')
         )
     }`;
+
+    // Filled in after the page renders — it queries the module's live context.
+    this.refreshConnection(moduleName);
 };
 
 // ── Smart Sync/Async Command Execution ──

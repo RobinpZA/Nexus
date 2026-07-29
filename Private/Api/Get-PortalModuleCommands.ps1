@@ -40,21 +40,15 @@
     $descriptions = @{}
 
     if ($wantDescriptions) {
-        # Import the module to access Get-Help
-        $imported = Import-RegisteredModule -ModuleEntry $mod
-        if ($imported) {
-            foreach ($cmdName in $meta.Commands) {
-                try {
-                    $help = Get-Help $cmdName -ErrorAction SilentlyContinue
-                    if ($help -and $help.Synopsis) {
-                        $synopsis = $help.Synopsis.Trim()
-                        # Skip unhelpful default synopsis (just the command name repeated)
-                        if ($synopsis -ne $cmdName -and $synopsis.Length -gt 0) {
-                            $descriptions[$cmdName] = $synopsis
-                        }
-                    }
-                } catch { }
+        # Collected inside the module's own context — importing it here would load its
+        # dependencies (Graph, EXO, Teams) into the listener process.
+        $info = Get-ContextCommandSynopsis -ModuleEntry $mod -CommandNames @($meta.Commands)
+        if ($info.status -eq 'ok' -and $info.data) {
+            foreach ($property in $info.data.PSObject.Properties) {
+                $descriptions[$property.Name] = $property.Value
             }
+        } else {
+            Write-HubLog -Level Warning -Message "Descriptions unavailable for $ModuleName : $($info.message)"
         }
     }
 

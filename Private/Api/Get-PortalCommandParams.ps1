@@ -22,18 +22,21 @@ function Get-PortalCommandParams {
         return
     }
 
-    # Ensure module is imported
-    $imported = Import-RegisteredModule -ModuleEntry $mod
-    if (-not $imported) {
-        Write-ErrorResponse -Context $Context -StatusCode 500 -Message "Failed to import module: $ModuleName"
+    # Read the metadata inside the module's own context — importing it here would load
+    # its dependencies (Graph, EXO, Teams) into the listener process.
+    $info = Get-ContextCommandParameters -ModuleEntry $mod -CommandName $CommandName
+
+    if ($info.status -eq 'busy') {
+        Write-ErrorResponse -Context $Context -StatusCode 409 -Message $info.message
         return
     }
-
-    $paramInfo = Get-CommandParameters -CommandName $CommandName
-    if (-not $paramInfo) {
+    if ($info.status -ne 'ok' -or -not $info.data) {
+        Write-HubLog -Level Warning -Message "Metadata failed for $ModuleName/$CommandName : $($info.message)"
         Write-ErrorResponse -Context $Context -StatusCode 404 -Message "Command not found: $CommandName"
         return
     }
+
+    $paramInfo = $info.data
 
     $data = @{
         command     = $paramInfo.command

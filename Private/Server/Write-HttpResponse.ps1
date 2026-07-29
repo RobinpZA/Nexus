@@ -9,7 +9,9 @@
     $Context.Response.StatusCode = $StatusCode
     $Context.Response.ContentType = 'application/json; charset=utf-8'
     $Context.Response.ContentLength64 = $buffer.Length
-    # SECURITY: No CORS headers — same-origin only (localhost serves both API and portal)
+    # SECURITY: No CORS headers — same-origin only (localhost serves both API and portal).
+    # Cross-origin writes are rejected up front by Test-RequestOrigin; CORS alone does not stop them.
+    $Context.Response.Headers.Add('X-Content-Type-Options', 'nosniff')
     $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
     $Context.Response.OutputStream.Close()
 }
@@ -26,7 +28,8 @@ function Write-StaticFile {
     )
 
     # SECURITY: Resolve the full canonical path and verify it's under the portal root
-    $portalRootFull = [System.IO.Path]::GetFullPath($script:PortalRoot).TrimEnd('\', '/')
+    # The separator matters: without it a sibling folder such as "portal-backup" would pass.
+    $portalRootFull = [System.IO.Path]::GetFullPath($script:PortalRoot).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
     $requestedFull  = [System.IO.Path]::GetFullPath((Join-Path $script:PortalRoot $FilePath))
 
     if (-not $requestedFull.StartsWith($portalRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -61,6 +64,7 @@ function Write-StaticFile {
         $Context.Response.StatusCode = 200
         $Context.Response.ContentType = $contentType
         $Context.Response.ContentLength64 = $buffer.Length
+        $Context.Response.Headers.Add('X-Content-Type-Options', 'nosniff')
         if ($ext -ne '.html') { $Context.Response.Headers.Add('Cache-Control', 'public, max-age=3600') }
         else { $Context.Response.Headers.Add('Cache-Control', 'no-cache') }
         $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
@@ -93,6 +97,7 @@ function Write-ErrorResponse {
         400 { $Message }   # Bad request messages are intentional (e.g. "Missing field: module")
         403 { 'Forbidden' }
         404 { $Message }   # "Not found" is safe
+        405 { $Message }   # Method not allowed is safe
         409 { $Message }   # Conflict messages are intentional
         default { 'An error occurred. Check the server log for details.' }
     }

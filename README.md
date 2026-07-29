@@ -16,7 +16,12 @@ Central PowerShell module hub with a local web portal for discovering, importing
 ## Requirements
 
 - PowerShell 7.2 or newer
-- Windows, macOS, or Linux
+- Windows
+
+> [!NOTE]
+> Nexus is Windows-only today: module discovery uses Windows path separators, process
+> isolation launches workers with `-WindowStyle`, and `Enable-NexusAutoStart` writes a
+> Windows-shaped profile block.
 
 ## Quick Start
 

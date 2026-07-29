@@ -18,7 +18,15 @@ switch ($Task) {
     'Analyze' {
         Write-Host '─── PSScriptAnalyzer ───' -ForegroundColor Cyan
         Import-Module PSScriptAnalyzer -ErrorAction Stop
-        $results = Invoke-ScriptAnalyzer -Path $PSScriptRoot -Recurse -Settings "$PSScriptRoot\PSScriptAnalyzerSettings.psd1" -ExcludeRule PSUseToExportFieldsInManifest
+        # Analyse sources only — build/ holds copies that would be reported twice.
+        $results = @()
+        foreach ($folder in @('Private', 'Public', 'Tests')) {
+            $path = Join-Path $PSScriptRoot $folder
+            if (Test-Path $path) {
+                $results += Invoke-ScriptAnalyzer -Path $path -Recurse -Settings "$PSScriptRoot\PSScriptAnalyzerSettings.psd1" -ExcludeRule PSUseToExportFieldsInManifest
+            }
+        }
+        $results += Invoke-ScriptAnalyzer -Path "$PSScriptRoot\Nexus.psm1" -Settings "$PSScriptRoot\PSScriptAnalyzerSettings.psd1" -ExcludeRule PSUseToExportFieldsInManifest
         $results | Format-Table -AutoSize
         $errors = $results | Where-Object Severity -eq 'Error'
         if ($errors) {
@@ -36,7 +44,12 @@ switch ($Task) {
         $config.Output.Verbosity = 'Detailed'
         $config.TestResult.Enabled = $true
         $config.TestResult.OutputPath = "$PSScriptRoot\build\TestResults.xml"
-        Invoke-Pester -Configuration $config
+        $config.Run.PassThru = $true
+        $result = Invoke-Pester -Configuration $config
+        # Without this the CI task reported success with failing tests.
+        if ($result.FailedCount -gt 0) {
+            throw "$($result.FailedCount) test(s) failed"
+        }
     }
     'Build' {
         Write-Host '─── Build ───' -ForegroundColor Cyan

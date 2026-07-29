@@ -83,8 +83,9 @@
     foreach ($key in $Parameters.Keys) {
         $value = $Parameters[$key]
         $paramInfo = $cmd.Parameters[$key]
-        if ($paramInfo -and $paramInfo.ParameterType -eq [switch]) {
-            $boundParams[$key] = [bool]$value
+        if ($paramInfo -and ($paramInfo.ParameterType -eq [switch] -or $paramInfo.ParameterType -eq [bool])) {
+            # [bool]'false' is $true, so match the text explicitly.
+            $boundParams[$key] = ($value -is [bool] -and $value) -or ("$value".Trim().ToLower() -in @('true', '1', 'yes', 'on'))
         } elseif ($paramInfo -and $paramInfo.ParameterType -eq [int]) {
             $boundParams[$key] = [int]$value
         } elseif ($paramInfo -and $paramInfo.ParameterType -eq [string[]]) {
@@ -99,18 +100,10 @@
     try {
         Write-HubLog -Level Info -Message "Executing: $CommandName (module-scoped)" -Source $ModuleEntry.name
         $result = & $cmd @boundParams *>&1
-        foreach ($item in $result) {
-            $stream = switch ($item.GetType().Name) {
-                'ErrorRecord'       { 'Error' }
-                'WarningRecord'     { 'Warning' }
-                'InformationRecord' { 'Information' }
-                'VerboseRecord'     { 'Verbose' }
-                'DebugRecord'       { 'Debug' }
-                default             { 'Success' }
-            }
-            $output += [PSCustomObject]@{ stream = $stream; message = $item.ToString() }
-        }
-        $success = $true
+        # Errors arrive on the success stream because of *>&1 — classify by record type,
+        # otherwise a command that writes an error record is reported as succeeded.
+        $output += @(ConvertTo-HubOutput -Records $result)
+        $success = -not ($output | Where-Object { $_.stream -eq 'Error' })
     } catch {
         $output += [PSCustomObject]@{ stream = 'Error'; message = $_.Exception.Message }
         $success = $false

@@ -36,7 +36,10 @@ function Start-Nexus {
     Write-Host ''
 
     # Load settings
-    $settings = Get-Content $script:SettingsFile -Raw | ConvertFrom-Json
+    $settings = Read-HubSettings
+    if ($settings.logLevel) { $script:LogLevel = [string]$settings.logLevel }
+    $retention = if ($null -ne $settings.logRetentionDays) { [int]$settings.logRetentionDays } else { 30 }
+    Remove-OldLog -RetentionDays $retention
 
     # Optional scan on startup
     if ($Scan -or $settings.scanOnStartup) {
@@ -93,6 +96,9 @@ function Start-Nexus {
         }
         $server.Listener.Dispose()
         $script:Listener = $null
+        # Close module runspaces and child processes — otherwise every session leaves
+        # a pwsh worker per process-isolated module running.
+        Stop-ModuleContext
         Write-Host ''
         Write-Host '  Nexus stopped.' -ForegroundColor DarkCyan
         Write-Host ''

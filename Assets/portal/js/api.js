@@ -31,6 +31,14 @@ const API = {
         return this._fetch(`/api/modules/${encodeURIComponent(moduleName)}/commands`);
     },
 
+    async getModuleConnection(moduleName) {
+        return this._fetch(`/api/modules/${encodeURIComponent(moduleName)}/connection`);
+    },
+
+    async disconnectModule(moduleName) {
+        return this._fetch(`/api/modules/${encodeURIComponent(moduleName)}/connection`, { method: 'DELETE' });
+    },
+
     // ── Commands ──
     async searchCommands(query) {
         const q = query ? `?search=${encodeURIComponent(query)}` : '';
@@ -76,6 +84,13 @@ const API = {
     async addFavourite(moduleName, commandName) {
         return this._fetch('/api/favourites', {
             method: 'POST',
+            body: JSON.stringify({ module: moduleName, command: commandName })
+        });
+    },
+
+    async removeFavourite(moduleName, commandName) {
+        return this._fetch('/api/favourites', {
+            method: 'DELETE',
             body: JSON.stringify({ module: moduleName, command: commandName })
         });
     },

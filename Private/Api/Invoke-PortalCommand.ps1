@@ -2,22 +2,26 @@
     <#
     .SYNOPSIS
         API handler: POST /api/execute
-        All commands run inside a persistent, isolated runspace per module.
-        - Connect-* / Disconnect-*: SYNC (blocks, but auth dialogs can appear in the runspace)
-        - Everything else: ASYNC (non-blocking, portal polls for result)
+        All commands run inside a persistent, isolated context per module — a runspace, or
+        a child process for modules that load Graph/EXO/Teams. Invoke-InRunspace decides
+        sync vs async: runspace-mode connection commands run synchronously so an interactive
+        auth prompt can complete, everything else returns a job id and is polled.
 
-        Each module gets its own runspace, so:
-        - Module A's Graph connection does not interfere with Module B's
-        - Different DLL versions don't conflict
-        - Auth tokens persist between commands within the same module
+        What the isolation does cover:
+        - Different DLL versions do not conflict between modules
+        - In-memory session state stays within one module's context
+        - A module's context keeps its session between commands
+
+        What it does NOT cover: credential caches that live on disk. Microsoft Graph
+        persists delegated tokens under the user's profile unless a module connects with
+        -ContextScope Process, so a sign-in made in one module can be reused silently by
+        another — and by any other process running as that user. The portal reports this
+        per module via /api/modules/{name}/connection.
     #>
     param([Parameter(Mandatory)][System.Net.HttpListenerContext]$Context)
 
-    $reader = [System.IO.StreamReader]::new($Context.Request.InputStream)
-    $bodyRaw = $reader.ReadToEnd(); $reader.Close()
-
-    try { $body = $bodyRaw | ConvertFrom-Json }
-    catch { Write-ErrorResponse -Context $Context -StatusCode 400 -Message 'Invalid JSON body'; return }
+    $body = Read-JsonRequestBody -Context $Context
+    if ($null -eq $body) { Write-ErrorResponse -Context $Context -StatusCode 400 -Message 'Invalid JSON body'; return }
 
     $moduleName  = $body.module
     $commandName = $body.command
@@ -68,7 +72,7 @@
         param($Success)
 
         try {
-            $settings = Get-Content $script:SettingsFile -Raw | ConvertFrom-Json
+            $settings = Read-HubSettings
             $recent = @{
                 module    = $moduleName
                 command   = $commandName
@@ -77,59 +81,36 @@
             }
             $existingRecent = @($settings.recentCommands)
             $settings.recentCommands = @(@($recent) + $existingRecent | Select-Object -First $settings.maxRecentCommands)
-            $settings | ConvertTo-Json -Depth 10 | Out-File $script:SettingsFile -Encoding utf8 -Force
+            Save-HubSettings -Settings $settings
         } catch {
             Write-HubLog -Level Debug -Message "Failed to update recent commands: $($_.Exception.Message)"
         }
     }
 
-    # ── Determine execution mode ──
-    $verb = $null
-    if ($commandName -match '^([A-Za-z]+)-') { $verb = $Matches[1] }
-    $connectionVerbs = @('Connect', 'Disconnect', 'Login', 'Logout')
-    $isConnectionCommand = $verb -in $connectionVerbs
+    # ── Execute ──
+    # Invoke-InRunspace decides sync vs async from the module's isolation mode: it
+    # returns a job id when the command was started in the background, or a finished
+    # result object when it ran synchronously or could not start.
+    $outcome = Invoke-InRunspace -ModuleEntry $mod -CommandName $commandName -Parameters $parameters -Async
 
-    if ($isConnectionCommand) {
-        # ── SYNC in isolated runspace (blocks listener, but auth needs it) ──
-        Write-HubLog -Level Info -Message "Running sync in runspace (connection): $commandName" -Source $moduleName
-
-        $result = Invoke-InRunspace -ModuleEntry $mod -CommandName $commandName -Parameters $parameters
-        & $trackRecent $result.success
-
+    if ($outcome -is [string]) {
+        & $trackRecent $null
         Write-JsonResponse -Context $Context -Data @{
-            mode       = 'sync'
-            success    = $result.success
-            module     = $result.module
-            command    = $result.command
-            durationMs = $result.durationMs
-            output     = @($result.output)
+            mode    = 'async'
+            jobId   = $outcome
+            status  = 'running'
+            module  = $moduleName
+            command = $commandName
         }
     } else {
-        # ── ASYNC in isolated runspace (non-blocking) ──
-        Write-HubLog -Level Info -Message "Running async in runspace: $commandName" -Source $moduleName
-
-        $jobId = Invoke-InRunspace -ModuleEntry $mod -CommandName $commandName -Parameters $parameters -Async
-
-        if ($jobId -is [string]) {
-            & $trackRecent $null
-            Write-JsonResponse -Context $Context -Data @{
-                mode    = 'async'
-                jobId   = $jobId
-                status  = 'running'
-                module  = $moduleName
-                command = $commandName
-            }
-        } else {
-            # Invoke-InRunspace returned a result object (error case)
-            & $trackRecent $jobId.success
-            Write-JsonResponse -Context $Context -Data @{
-                mode       = 'sync'
-                success    = $jobId.success
-                module     = $jobId.module
-                command    = $jobId.command
-                durationMs = $jobId.durationMs
-                output     = @($jobId.output)
-            }
+        & $trackRecent $outcome.success
+        Write-JsonResponse -Context $Context -Data @{
+            mode       = 'sync'
+            success    = $outcome.success
+            module     = $outcome.module
+            command    = $outcome.command
+            durationMs = $outcome.durationMs
+            output     = @($outcome.output)
         }
     }
 }

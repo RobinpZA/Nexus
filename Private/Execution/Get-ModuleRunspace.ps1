@@ -180,6 +180,12 @@ function New-ProcessContext {
     $readyFile    = Join-Path $commsDir 'ready'
     $exitFile     = Join-Path $commsDir 'exit'
 
+    # Reflection scripts live on disk so the worker protocol stays a fixed set of modes
+    # instead of "run this script text".
+    Get-CommandMetadataScript | Out-File (Join-Path $commsDir 'meta.ps1') -Encoding utf8 -Force
+    Get-CommandSynopsisScript | Out-File (Join-Path $commsDir 'synopsis.ps1') -Encoding utf8 -Force
+    Get-ConnectionStateScript | Out-File (Join-Path $commsDir 'connection.ps1') -Encoding utf8 -Force
+
     $escapedModPath = $ModuleEntry.path -replace "'", "''"
     $escapedCommsDir = $commsDir -replace "'", "''"
 
@@ -191,6 +197,9 @@ function New-ProcessContext {
 `$responseFile = Join-Path `$commsDir 'response.json'
 `$readyFile    = Join-Path `$commsDir 'ready'
 `$exitFile     = Join-Path `$commsDir 'exit'
+`$metaScript       = Join-Path `$commsDir 'meta.ps1'
+`$synopsisScript   = Join-Path `$commsDir 'synopsis.ps1'
+`$connectionScript = Join-Path `$commsDir 'connection.ps1'
 
 Write-Host "Nexus Process: $name" -ForegroundColor Cyan
 Write-Host "Importing module..." -ForegroundColor DarkGray
@@ -217,6 +226,27 @@ while (-not (Test-Path `$exitFile)) {
             Remove-Item `$commandFile -Force
 
             `$cmd = `$req.command
+
+            if (`$req.mode -in @('params', 'synopsis', 'connection')) {
+                Write-Host "? metadata (`$(`$req.mode))" -ForegroundColor DarkGray
+                try {
+                    `$script = switch (`$req.mode) {
+                        'params'     { `$metaScript }
+                        'synopsis'   { `$synopsisScript }
+                        'connection' { `$connectionScript }
+                    }
+                    `$meta = & `$script `$cmd
+                    @{success=`$true; metadata=`$meta; durationMs=0} |
+                        ConvertTo-Json -Depth 8 -Compress |
+                        Out-File `$responseFile -Encoding utf8 -Force
+                } catch {
+                    @{success=`$false; output=@(@{stream='Error'; message=`$_.Exception.Message}); durationMs=0} |
+                        ConvertTo-Json -Depth 5 -Compress |
+                        Out-File `$responseFile -Encoding utf8 -Force
+                }
+                continue
+            }
+
             Write-Host "> `$cmd" -ForegroundColor Yellow
 
             `$params = @{}
