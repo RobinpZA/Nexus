@@ -69,7 +69,7 @@
     }
 
     $trackRecent = {
-        param($Success)
+        param($Success, $JobId)
 
         try {
             $settings = Read-HubSettings
@@ -78,6 +78,7 @@
                 command   = $commandName
                 timestamp = (Get-Date).ToUniversalTime().ToString('o')
                 success   = $Success
+                jobId     = $JobId
             }
             $existingRecent = @($settings.recentCommands)
             $settings.recentCommands = @(@($recent) + $existingRecent | Select-Object -First $settings.maxRecentCommands)
@@ -94,7 +95,7 @@
     $outcome = Invoke-InRunspace -ModuleEntry $mod -CommandName $commandName -Parameters $parameters -Async
 
     if ($outcome -is [string]) {
-        & $trackRecent $null
+        & $trackRecent $null $outcome
         Write-JsonResponse -Context $Context -Data @{
             mode    = 'async'
             jobId   = $outcome

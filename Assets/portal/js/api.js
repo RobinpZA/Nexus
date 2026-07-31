@@ -13,7 +13,9 @@ const API = {
             });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ message: res.statusText }));
-                throw new Error(err.message || `HTTP ${res.status}`);
+                const error = new Error(err.message || `HTTP ${res.status}`);
+                error.status = res.status;
+                throw error;
             }
             return await res.json();
         } catch (e) {

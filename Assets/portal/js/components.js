@@ -39,7 +39,9 @@ const Components = {
     copyOutput() { const b=document.getElementById('consoleBody');if(b)navigator.clipboard.writeText(b.innerText).then(()=>Components.toast('Copied','success')); },
     statCard(value,label,colour,iconSvg) { return `<div class="stat-card"><div class="stat-icon ${colour}">${iconSvg}</div><div class="stat-info"><h3>${value}</h3><p>${label}</p></div></div>`; },
     recentItem(item) {
-        const time=item.timestamp?new Date(item.timestamp).toLocaleString():'', icon=item.success?'✓':'✗', cls=item.success?'style="color:var(--success)"':'style="color:var(--error)"';
+        const time=item.timestamp?new Date(item.timestamp).toLocaleString():'';
+        // success is null while an async job is still running or hasn't been polled to completion yet — that's pending, not failed.
+        const pending=item.success===null||item.success===undefined, icon=pending?'…':(item.success?'✓':'✗'), cls=pending?'style="color:var(--text-muted)"':(item.success?'style="color:var(--success)"':'style="color:var(--error)"');
         return `<li class="recent-item" data-nav="${this.navTarget('commands',item.module,item.command)}"><span ${cls}>${icon}</span><span class="recent-cmd">${this.esc(item.command)}</span><span class="recent-module">${this.esc(item.module)}</span><span class="recent-time">${time}</span></li>`;
     },
     // Sign-in state for a module's live context. A "shared" provider is one whose token

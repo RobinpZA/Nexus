@@ -131,7 +131,7 @@ const App = {
     _cst:null, debounceCommandSearch(){clearTimeout(this._cst);this._cst=setTimeout(()=>{const q=document.getElementById('cmdSearchInput').value.trim();window.location.hash=q?`#/commands?search=${encodeURIComponent(q)}`:'#/commands';},400);},
 
     async renderCommandDetail(el,mn,cn) {
-        el.innerHTML=Components.loading(); let pd; try { pd=await API.getCommandParams(mn,cn); } catch(e){el.innerHTML=Components.emptyState('Not Found',`Cannot load ${cn}.`);return;}
+        el.innerHTML=Components.loading(); let pd; try { pd=await API.getCommandParams(mn,cn); } catch(e){const title=e.status===409?'Busy':e.status===404?'Not Found':'Error';el.innerHTML=Components.emptyState(title,e.message||`Cannot load ${cn}.`);return;}
         const params=pd.parameters||[];
         el.innerHTML=`${Components.breadcrumb([{label:'Modules',href:'#/modules'},{label:mn,href:'#/modules/'+encodeURIComponent(mn)},{label:cn}])}
         <div class="cmd-detail-header"><h1>${Components.esc(cn)}</h1></div>

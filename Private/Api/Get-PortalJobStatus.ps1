@@ -30,6 +30,7 @@
         $data['success']    = $jobInfo.result.success
         $data['durationMs'] = $jobInfo.result.durationMs
         $data['output']     = @($jobInfo.result.output)
+        Update-RecentCommandResult -JobId $JobId -Success $jobInfo.result.success
     }
 
     Write-JsonResponse -Context $Context -Data $data
