@@ -20,7 +20,7 @@ switch ($Task) {
         Import-Module PSScriptAnalyzer -ErrorAction Stop
         # Analyse sources only — build/ holds copies that would be reported twice.
         $results = @()
-        foreach ($folder in @('Private', 'Public', 'Tests')) {
+        foreach ($folder in @('Private', 'Public', 'Tests', 'Workers')) {
             $path = Join-Path $PSScriptRoot $folder
             if (Test-Path $path) {
                 $results += Invoke-ScriptAnalyzer -Path $path -Recurse -Settings "$PSScriptRoot\PSScriptAnalyzerSettings.psd1" -ExcludeRule PSUseToExportFieldsInManifest
@@ -55,7 +55,7 @@ switch ($Task) {
         Write-Host '─── Build ───' -ForegroundColor Cyan
         if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
         New-Item $buildDir -ItemType Directory -Force | Out-Null
-        $items = @('Public', 'Private', 'Assets', 'Config', "$moduleName.psd1", "$moduleName.psm1")
+        $items = @('Public', 'Private', 'Workers', 'Assets', 'Config', "$moduleName.psd1", "$moduleName.psm1")
         foreach ($item in $items) {
             $src = Join-Path $PSScriptRoot $item
             if (Test-Path $src) {

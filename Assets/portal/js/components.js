@@ -37,7 +37,7 @@ const Components = {
         return `<div class="console-container"><div class="console-header"><h4>Output${dt}</h4><button class="btn btn-sm" data-action="copy-output">📋 Copy</button></div><div class="console-body" id="consoleBody">${lines||'<div class="console-empty">No output yet. Click Run to execute the command.</div>'}</div></div>`;
     },
     copyOutput() { const b=document.getElementById('consoleBody');if(b)navigator.clipboard.writeText(b.innerText).then(()=>Components.toast('Copied','success')); },
-    statCard(value,label,colour,iconSvg) { return `<div class="stat-card"><div class="stat-icon ${colour}">${iconSvg}</div><div class="stat-info"><h3>${value}</h3><p>${label}</p></div></div>`; },
+    statCard(value,label,colour,iconSvg) { return `<div class="stat-card"><div class="stat-icon ${colour}">${iconSvg}</div><div class="stat-info"><h3>${this.esc(value)}</h3><p>${this.esc(label)}</p></div></div>`; },
     recentItem(item) {
         const time=item.timestamp?new Date(item.timestamp).toLocaleString():'';
         // success is null while an async job is still running or hasn't been polled to completion yet — that's pending, not failed.
@@ -73,8 +73,10 @@ const Components = {
     scanRootItem(path) { return `<li class="scan-root-item"><span>📁 ${this.esc(path)}</span><button class="btn btn-sm btn-danger" data-action="remove-scan-root" data-path="${this.esc(path)}">✕</button></li>`; },
     toast(message,type='info') { const c=document.getElementById('toastContainer'),t=document.createElement('div');t.className=`toast ${type}`;t.textContent=message;c.appendChild(t);setTimeout(()=>{t.classList.add('fade-out');setTimeout(()=>t.remove(),300);},3000); },
     loading() { return '<div class="loading"><div class="spinner"></div> Loading...</div>'; },
-    emptyState(title,message) { return `<div class="empty-state"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><h3>${title}</h3><p>${message}</p></div>`; },
-    breadcrumb(items) { return `<div class="breadcrumb">${items.map((item,i)=>{if(i===items.length-1)return `<span>${this.esc(item.label)}</span>`;return `<a href="${item.href}">${this.esc(item.label)}</a><span class="sep">›</span>`;}).join('')}</div>`; },
+    // title/message flow here from URL hash segments and server error text (see
+    // renderModuleDetail, renderCommandDetail) — never trust either as markup.
+    emptyState(title,message) { return `<div class="empty-state"><svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><h3>${this.esc(title)}</h3><p>${this.esc(message)}</p></div>`; },
+    breadcrumb(items) { return `<div class="breadcrumb">${items.map((item,i)=>{if(i===items.length-1)return `<span>${this.esc(item.label)}</span>`;return `<a href="${this.esc(item.href)}">${this.esc(item.label)}</a><span class="sep">›</span>`;}).join('')}</div>`; },
     // Escapes quotes as well as angle brackets — textContent/innerHTML leaves quotes
     // intact, which is unsafe inside an attribute value.
     esc(str) { if(str===null||str===undefined)return '';return String(str).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }

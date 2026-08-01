@@ -186,3 +186,177 @@ Describe 'Execution: Command Metadata Script' {
         $meta.parameters.name | Should -Not -Contain 'ErrorAction'
     }
 }
+
+Describe 'Execution: Connection Commands Run Async' {
+    # Runspace-mode Connect/Disconnect used to run synchronously so a caller could wait
+    # on an interactive auth prompt. Testing showed that runspace never has one to wait
+    # on (New-RunspaceContext's "Default Host" rejects Read-Host outright), so the
+    # carve-out was removed — see Invoke-InRunspace.ps1's description for the full
+    # reasoning. These tests pin the resulting behaviour.
+
+    AfterEach {
+        & (Get-Module Nexus) {
+            $script:BackgroundJobs = @{}
+            if ($script:ModuleRunspaces.ContainsKey('FakeGraphModule')) {
+                $entry = $script:ModuleRunspaces['FakeGraphModule']
+                if ($entry.Runspace) { $entry.Runspace.Dispose() }
+                $script:ModuleRunspaces.Remove('FakeGraphModule')
+            }
+        }
+    }
+
+    It 'Returns a job id for a runspace-mode Connect command instead of blocking' {
+        $fixture = Join-Path $PSScriptRoot 'Fixtures\FakeGraphModule\FakeGraphModule.psd1'
+        $outcome = & (Get-Module Nexus) {
+            param($path)
+            # Force runspace mode: the fixture's own Disconnect-MgGraph shadow function
+            # substring-matches the (case-insensitive) 'Connect-MgGraph' isolation
+            # heuristic, which would otherwise route this into process isolation instead
+            # — already async before this fix, so it wouldn't exercise the new behaviour.
+            $mod = [PSCustomObject]@{ name = 'FakeGraphModule'; path = $path; isolation = 'runspace' }
+            Invoke-InRunspace -ModuleEntry $mod -CommandName 'Connect-FakeGraph' -Parameters @{} -Async
+        } $fixture
+
+        $outcome | Should -BeOfType [string]
+        $outcome.Length | Should -Be 12   # jobId format: guid, no dashes, first 12 chars
+    }
+
+    It 'Marks the runspace context Connected once that job completes' {
+        $fixture = Join-Path $PSScriptRoot 'Fixtures\FakeGraphModule\FakeGraphModule.psd1'
+        $result = & (Get-Module Nexus) {
+            param($path)
+            # Force runspace mode: the fixture's own Disconnect-MgGraph shadow function
+            # substring-matches the (case-insensitive) 'Connect-MgGraph' isolation
+            # heuristic, which would otherwise route this into process isolation instead
+            # — already async before this fix, so it wouldn't exercise the new behaviour.
+            $mod = [PSCustomObject]@{ name = 'FakeGraphModule'; path = $path; isolation = 'runspace' }
+            $jobId = Invoke-InRunspace -ModuleEntry $mod -CommandName 'Connect-FakeGraph' -Parameters @{} -Async
+
+            $deadline = (Get-Date).AddSeconds(5)
+            $status = $null
+            while ((Get-Date) -lt $deadline) {
+                $status = Get-BackgroundCommandResult -JobId $jobId
+                if ($status.status -ne 'running') { break }
+                Start-Sleep -Milliseconds 50
+            }
+
+            [PSCustomObject]@{
+                Status    = $status.status
+                Success   = $status.result.success
+                Connected = $script:ModuleRunspaces['FakeGraphModule'].Connected
+            }
+        } $fixture
+
+        $result.Status | Should -Be 'completed'
+        $result.Success | Should -BeTrue
+        $result.Connected | Should -BeTrue
+    }
+}
+
+Describe 'Execution: Runspace Job Timeout' {
+    # Process-mode jobs already timed out (TimeoutAt in Start-ProcessAsync); runspace
+    # jobs previously had no equivalent, so a hung command held its context's
+    # ActiveAsyncJobId forever.
+
+    It 'Fails a hung job once it passes its TimeoutAt, freeing the context' {
+        $result = & (Get-Module Nexus) {
+            $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+            $runspace.Open()
+            $ps = [PowerShell]::Create()
+            $ps.Runspace = $runspace
+            $null = $ps.AddScript('Start-Sleep -Seconds 30')
+            $async = $ps.BeginInvoke()
+
+            $context = @{ ActiveAsyncJobId = 'job1' }
+            $job = @{
+                Id = 'job1'; PowerShell = $ps; AsyncResult = $async; StartedAt = (Get-Date).AddMinutes(-11)
+                TimeoutAt = (Get-Date).AddSeconds(-1); Status = 'running'; Result = $null
+                Context = $context; Command = 'Get-Thing'
+            }
+
+            Complete-RunspaceJob -Job $job
+            $runspace.Dispose()
+
+            [PSCustomObject]@{
+                Status         = $job.Status
+                Message        = $job.Result.output[0].message
+                ContextCleared = ($null -eq $context.ActiveAsyncJobId)
+            }
+        }
+
+        $result.Status | Should -Be 'failed'
+        $result.Message | Should -Be 'Command timed out'
+        $result.ContextCleared | Should -BeTrue
+    }
+
+    It 'Leaves a running job alone before its timeout' {
+        $status = & (Get-Module Nexus) {
+            $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+            $runspace.Open()
+            $ps = [PowerShell]::Create()
+            $ps.Runspace = $runspace
+            $null = $ps.AddScript('Start-Sleep -Seconds 30')
+            $async = $ps.BeginInvoke()
+
+            $job = @{
+                Id = 'job2'; PowerShell = $ps; AsyncResult = $async; StartedAt = (Get-Date)
+                TimeoutAt = (Get-Date).AddMinutes(10); Status = 'running'; Result = $null
+                Context = @{}; Command = 'Get-Thing'
+            }
+            Complete-RunspaceJob -Job $job
+            $result = $job.Status
+
+            $ps.Stop(); $ps.Dispose(); $runspace.Dispose()
+            $result
+        }
+        $status | Should -Be 'running'
+    }
+}
+
+Describe 'Execution: Background Job Sweep' {
+    # A finished job only ever advanced (and freed its context) when a client polled
+    # its specific id. A closed tab / dropped connection meant nobody ever did, so the
+    # context stayed locked until Nexus restarted. Sync-BackgroundJob advances every
+    # running job and is called on every request, not just job polls.
+
+    AfterEach {
+        & (Get-Module Nexus) { $script:BackgroundJobs = @{} }
+    }
+
+    It 'Advances and clears a job nobody is polling by id' {
+        $result = & (Get-Module Nexus) {
+            $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+            $runspace.Open()
+            $ps = [PowerShell]::Create()
+            $ps.Runspace = $runspace
+            $null = $ps.AddScript('1 + 1')
+            $async = $ps.BeginInvoke()
+            $null = $async.AsyncWaitHandle.WaitOne(5000)   # let it actually finish
+
+            $context = @{ ActiveAsyncJobId = 'jobA' }
+            $script:BackgroundJobs = @{
+                'jobA' = @{
+                    Id = 'jobA'; PowerShell = $ps; AsyncResult = $async; StartedAt = (Get-Date)
+                    TimeoutAt = (Get-Date).AddMinutes(10); Status = 'running'; Result = $null
+                    Context = $context; Command = 'Get-Thing'
+                }
+            }
+
+            Sync-BackgroundJob   # note: never polled by id
+
+            $runspace.Dispose()
+            [PSCustomObject]@{
+                Status         = $script:BackgroundJobs['jobA'].Status
+                ContextCleared = ($null -eq $context.ActiveAsyncJobId)
+            }
+        }
+
+        $result.Status | Should -Be 'completed'
+        $result.ContextCleared | Should -BeTrue
+    }
+
+    It 'Invoke-RequestRouter calls Sync-BackgroundJob on every request' {
+        $funcDef = & (Get-Module Nexus) { (Get-Command 'Invoke-RequestRouter').ScriptBlock.ToString() }
+        $funcDef | Should -Match 'Sync-BackgroundJob'
+    }
+}

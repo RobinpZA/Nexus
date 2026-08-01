@@ -6,10 +6,20 @@ function Invoke-InRunspace {
         Returns a job id string when the command was started asynchronously, or a result
         object when it ran synchronously or could not be started.
 
-        Connection commands stay synchronous in RUNSPACE mode only: the interactive auth
-        prompt is raised inside the Nexus process, so the caller has to wait for it.
-        Process contexts own their own console and are always asynchronous — polling
-        there previously froze the listener for up to ten minutes.
+        Connect/Disconnect commands go through the same async path as everything else,
+        for both runspace and process contexts. That used to be process-only: a runspace
+        connect ran synchronously on the theory that it might raise an interactive auth
+        prompt inside the Nexus process, which the caller would then have to block and
+        wait for. Empirically that prompt never happens — a runspace built by
+        New-RunspaceContext gets PowerShell's internal "Default Host", not the real
+        console: Read-Host fails immediately there every time ("the host program does not
+        support user interaction"), synchronous or not, and Write-Host/Information output
+        is only ever collected once the whole pipeline finishes in both paths — there is
+        no live prompt to actually wait for. Real interactive connects (Graph/EXO/Teams)
+        already run in process isolation, unconditionally async since the ten-minute-freeze
+        fix below. Keeping runspace connects synchronous only meant a lightweight custom
+        module's Connect-* command could freeze the entire single-threaded listener —
+        including /api/health — for as long as that command ran.
     .PARAMETER ModuleEntry
         The registry entry for the module.
     .PARAMETER CommandName
@@ -37,16 +47,12 @@ function Invoke-InRunspace {
         }
     }
 
-    $verb = Get-CommandVerb -CommandName $CommandName
-    $isConnectionCommand = $verb -in @('Connect', 'Disconnect', 'Login', 'Logout')
-    $runAsync = $Async -and -not ($isConnectionCommand -and $rsEntry.Mode -eq 'runspace')
-
     if ($rsEntry.Mode -eq 'process') {
-        if ($runAsync) { return Start-ProcessAsync -ProcessEntry $rsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry }
+        if ($Async) { return Start-ProcessAsync -ProcessEntry $rsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry }
         return Invoke-InProcess -ProcessEntry $rsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry
     }
 
-    if ($runAsync) { return Start-RunspaceAsync -RsEntry $rsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry }
+    if ($Async) { return Start-RunspaceAsync -RsEntry $rsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry }
     return Invoke-RunspaceSync -RsEntry $rsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry
 }
 
@@ -133,16 +139,30 @@ function Get-RunspaceInvokeScript {
         let a crafted parameter name or array value run arbitrary code alongside the
         allow-listed command. Parameter names are also checked against the command's
         real parameter set before splatting.
+
+        SECURITY: Get-Command is scoped to the target module (-Module $ModuleName).
+        The runspace is created with CreateDefault(), so every built-in cmdlet
+        (Remove-Item, Invoke-Expression, ...) is already loaded in it. The caller's
+        allow-list check at the API layer only blocks a command it can positively
+        identify from the manifest — a module declaring `FunctionsToExport = '*'`
+        (a common pattern) yields an empty list there and nothing is blocked. Scoping
+        the lookup here means only commands this module actually exports can ever be
+        resolved, independent of what the manifest claims.
     .EXAMPLE
-        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters)
+        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument($ModuleName)
     #>
     [CmdletBinding()]
     param()
 
     return @'
-param($CommandName, $Params)
+param($CommandName, $Params, $ModuleName)
 
-$cmd = Get-Command -Name $CommandName -ErrorAction Stop
+# Get-Command treats -Module $null/'' as "no filter", not "match nothing" — an absent
+# ModuleName would silently reopen the exact hole this scoping exists to close.
+if ([string]::IsNullOrWhiteSpace($ModuleName)) { throw 'Internal error: no module scope supplied.' }
+
+$cmd = Get-Command -Name $CommandName -Module $ModuleName -ErrorAction SilentlyContinue
+if (-not $cmd) { throw "Command '$CommandName' is not exported by module '$ModuleName'." }
 
 $bound = @{}
 foreach ($key in $Params.Keys) {
@@ -175,7 +195,7 @@ function Invoke-RunspaceSync {
 
     $ps = [PowerShell]::Create()
     $ps.Runspace = $RsEntry.Runspace
-    $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters) | Out-Null
+    $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument($ModuleEntry.name) | Out-Null
 
     Write-HubLog -Level Info -Message "Executing in runspace (sync): $CommandName" -Source $ModuleEntry.name
     $output = @()
@@ -218,7 +238,7 @@ function Start-RunspaceAsync {
     $ps.Runspace = $RsEntry.Runspace
 
     try {
-        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters) | Out-Null
+        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument($ModuleEntry.name) | Out-Null
         $asyncResult = $ps.BeginInvoke()
     } catch {
         $ps.Dispose()
@@ -234,6 +254,7 @@ function Start-RunspaceAsync {
     $script:BackgroundJobs[$jobId] = @{
         Id = $jobId; Module = $ModuleEntry.name; Command = $CommandName; Mode = 'runspace'
         PowerShell = $ps; AsyncResult = $asyncResult; StartedAt = Get-Date
+        TimeoutAt = (Get-Date).AddMinutes(10)
         Status = 'running'; Result = $null; Context = $RsEntry
     }
     $RsEntry.ActiveAsyncJobId = $jobId

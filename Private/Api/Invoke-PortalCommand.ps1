@@ -3,9 +3,9 @@
     .SYNOPSIS
         API handler: POST /api/execute
         All commands run inside a persistent, isolated context per module — a runspace, or
-        a child process for modules that load Graph/EXO/Teams. Invoke-InRunspace decides
-        sync vs async: runspace-mode connection commands run synchronously so an interactive
-        auth prompt can complete, everything else returns a job id and is polled.
+        a child process for modules that load Graph/EXO/Teams. Every command, including
+        Connect/Disconnect, returns a job id and is polled — see Invoke-InRunspace for why
+        connection commands don't need to be synchronous.
 
         What the isolation does cover:
         - Different DLL versions do not conflict between modules
@@ -43,7 +43,13 @@
     if (-not $mod) { Write-ErrorResponse -Context $Context -StatusCode 404 -Message "Module not found: $moduleName"; return }
     if (-not $mod.enabled) { Write-ErrorResponse -Context $Context -StatusCode 403 -Message "Module is disabled: $moduleName"; return }
 
-    # SECURITY: Validate command is in the module's export list
+    # Fast-path rejection when the manifest declares an explicit export list — lets a
+    # disallowed command 403 immediately instead of spinning up a runspace/process.
+    # NOT the security boundary: a manifest can declare `FunctionsToExport = '*'`, which
+    # leaves $allowedCommands empty and this check inert. The authoritative check is
+    # inside the module's own runspace/process (Get-RunspaceInvokeScript / worker.ps1),
+    # which resolves the command scoped to the module (-Module $moduleName) regardless
+    # of what the manifest claims.
     $allowedCommands = @()
     if (Test-Path $mod.path) {
         try {

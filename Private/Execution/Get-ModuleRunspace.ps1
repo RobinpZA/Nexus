@@ -186,124 +186,25 @@ function New-ProcessContext {
     Get-CommandSynopsisScript | Out-File (Join-Path $commsDir 'synopsis.ps1') -Encoding utf8 -Force
     Get-ConnectionStateScript | Out-File (Join-Path $commsDir 'connection.ps1') -Encoding utf8 -Force
 
-    $escapedModPath = $ModuleEntry.path -replace "'", "''"
-    $escapedCommsDir = $commsDir -replace "'", "''"
-
-    $workerScript = @"
-`$host.UI.RawUI.WindowTitle = 'Nexus: $name'
-`$ErrorActionPreference = 'Continue'
-`$commsDir = '$escapedCommsDir'
-`$commandFile  = Join-Path `$commsDir 'command.json'
-`$responseFile = Join-Path `$commsDir 'response.json'
-`$readyFile    = Join-Path `$commsDir 'ready'
-`$exitFile     = Join-Path `$commsDir 'exit'
-`$metaScript       = Join-Path `$commsDir 'meta.ps1'
-`$synopsisScript   = Join-Path `$commsDir 'synopsis.ps1'
-`$connectionScript = Join-Path `$commsDir 'connection.ps1'
-
-Write-Host "Nexus Process: $name" -ForegroundColor Cyan
-Write-Host "Importing module..." -ForegroundColor DarkGray
-
-try {
-    Import-Module '$escapedModPath' -Force -DisableNameChecking -ErrorAction Stop
-    [System.Management.Automation.Runspaces.Runspace]::DefaultRunspace = `$host.Runspace
-    Write-Host "Module loaded." -ForegroundColor Green
-    'ready' | Out-File `$readyFile -Encoding utf8
-} catch {
-    Write-Host "FAILED: `$(`$_.Exception.Message)" -ForegroundColor Red
-    `$_.Exception.Message | Out-File `$readyFile -Encoding utf8
-    Start-Sleep -Seconds 10
-    return
-}
-
-Write-Host "Waiting for commands..." -ForegroundColor DarkGray
-Write-Host ""
-
-while (-not (Test-Path `$exitFile)) {
-    if (Test-Path `$commandFile) {
-        try {
-            `$req = Get-Content `$commandFile -Raw -Encoding utf8 | ConvertFrom-Json
-            Remove-Item `$commandFile -Force
-
-            `$cmd = `$req.command
-
-            if (`$req.mode -in @('params', 'synopsis', 'connection')) {
-                Write-Host "? metadata (`$(`$req.mode))" -ForegroundColor DarkGray
-                try {
-                    `$script = switch (`$req.mode) {
-                        'params'     { `$metaScript }
-                        'synopsis'   { `$synopsisScript }
-                        'connection' { `$connectionScript }
-                    }
-                    `$meta = & `$script `$cmd
-                    @{success=`$true; metadata=`$meta; durationMs=0} |
-                        ConvertTo-Json -Depth 8 -Compress |
-                        Out-File `$responseFile -Encoding utf8 -Force
-                } catch {
-                    @{success=`$false; output=@(@{stream='Error'; message=`$_.Exception.Message}); durationMs=0} |
-                        ConvertTo-Json -Depth 5 -Compress |
-                        Out-File `$responseFile -Encoding utf8 -Force
-                }
-                continue
-            }
-
-            Write-Host "> `$cmd" -ForegroundColor Yellow
-
-            `$params = @{}
-            if (`$req.parameters) { `$req.parameters.PSObject.Properties | ForEach-Object { `$params[`$_.Name] = `$_.Value } }
-
-            `$cmdInfo = Get-Command `$cmd -ErrorAction Stop
-            `$boundParams = @{}
-            foreach (`$key in `$params.Keys) {
-                `$val = `$params[`$key]
-                `$pInfo = `$cmdInfo.Parameters[`$key]
-                if (`$pInfo -and `$pInfo.ParameterType -eq [switch]) {
-                    if (`$val -eq `$true -or `$val -eq 'true' -or `$val -eq 'True') { `$boundParams[`$key] = [switch]`$true }
-                } else { `$boundParams[`$key] = `$val }
-            }
-
-            `$output = [System.Collections.Generic.List[object]]::new()
-            `$sw = [System.Diagnostics.Stopwatch]::StartNew()
-            try {
-                `$result = & `$cmdInfo @boundParams *>&1
-                foreach (`$item in `$result) {
-                    `$stream = switch (`$item.GetType().Name) {
-                        'ErrorRecord' {'Error'} 'WarningRecord' {'Warning'}
-                        'InformationRecord' {'Information'} default {'Success'}
-                    }
-                    `$output.Add(@{stream=`$stream; message=`$item.ToString()})
-                    `$color = switch (`$stream) { 'Error' {'Red'} 'Warning' {'Yellow'} 'Information' {'Cyan'} default {'White'} }
-                    Write-Host "  [`$stream] `$(`$item.ToString())" -ForegroundColor `$color
-                }
-                `$ok = `$true
-                Write-Host "  Done (`$([math]::Round(`$sw.Elapsed.TotalMilliseconds))ms)" -ForegroundColor Green
-            } catch {
-                `$output.Add(@{stream='Error'; message=`$_.Exception.Message})
-                Write-Host "  ERROR: `$(`$_.Exception.Message)" -ForegroundColor Red
-                `$ok = `$false
-            }
-            `$sw.Stop()
-
-            @{success=`$ok; output=`$output; durationMs=[math]::Round(`$sw.Elapsed.TotalMilliseconds)} |
-                ConvertTo-Json -Depth 5 -Compress |
-                Out-File `$responseFile -Encoding utf8 -Force
-        } catch {
-            @{success=`$false; output=@(@{stream='Error'; message=`$_.Exception.Message}); durationMs=0} |
-                ConvertTo-Json -Depth 5 -Compress |
-                Out-File `$responseFile -Encoding utf8 -Force
-        }
+    # SECURITY: The worker is a fixed file shipped with the module (Workers/ProcessWorker.ps1),
+    # not generated text written per module then launched with -ExecutionPolicy Bypass. The
+    # per-module values are passed as parameters — the module folder is a much narrower,
+    # install-time-controlled write surface than the comms directory under Logs.
+    $workerPath = Join-Path $script:NexusRoot 'Workers' 'ProcessWorker.ps1'
+    if (-not (Test-Path $workerPath)) {
+        Write-HubLog -Level Error -Message "Process worker script missing: $workerPath"
+        return $null
     }
-    Start-Sleep -Milliseconds 200
-}
-Write-Host "`nExiting." -ForegroundColor DarkGray
-"@
-
-    $workerPath = Join-Path $commsDir 'worker.ps1'
-    $workerScript | Out-File $workerPath -Encoding utf8 -Force
 
     $pwshPath = (Get-Process -Id $PID).Path
     $proc = Start-Process -FilePath $pwshPath `
-        -ArgumentList "-NoProfile -NoLogo -ExecutionPolicy Bypass -File `"$workerPath`"" `
+        -ArgumentList @(
+            '-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass',
+            '-File', $workerPath,
+            '-ModulePath', $ModuleEntry.path,
+            '-ModuleName', $name,
+            '-CommsDir', $commsDir
+        ) `
         -WindowStyle Minimized `
         -PassThru
 

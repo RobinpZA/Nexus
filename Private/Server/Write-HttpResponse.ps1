@@ -1,4 +1,28 @@
-﻿function Write-JsonResponse {
+﻿function Add-SecurityResponseHeader {
+    <#
+    .SYNOPSIS
+        Adds the headers every Nexus response carries.
+    .DESCRIPTION
+        SECURITY: frame-ancestors (and CSP generally) only takes effect from a real HTTP
+        header — the <meta http-equiv="Content-Security-Policy"> tag in index.html cannot
+        enforce frame-ancestors; browsers silently ignore that directive there. Sent on
+        every response, not just index.html, so a direct navigation to any Nexus URL
+        can't be framed either. X-Frame-Options is the pre-CSP fallback for browsers that
+        don't honour frame-ancestors.
+    .PARAMETER Context
+        The HttpListenerContext for the current request.
+    .EXAMPLE
+        Add-SecurityResponseHeader -Context $Context
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Net.HttpListenerContext]$Context)
+
+    $Context.Response.Headers.Add('X-Content-Type-Options', 'nosniff')
+    $Context.Response.Headers.Add('X-Frame-Options', 'DENY')
+    $Context.Response.Headers.Add('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'")
+}
+
+function Write-JsonResponse {
     param(
         [Parameter(Mandatory)][System.Net.HttpListenerContext]$Context,
         [Parameter(Mandatory)][object]$Data,
@@ -11,7 +35,7 @@
     $Context.Response.ContentLength64 = $buffer.Length
     # SECURITY: No CORS headers — same-origin only (localhost serves both API and portal).
     # Cross-origin writes are rejected up front by Test-RequestOrigin; CORS alone does not stop them.
-    $Context.Response.Headers.Add('X-Content-Type-Options', 'nosniff')
+    Add-SecurityResponseHeader -Context $Context
     $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
     $Context.Response.OutputStream.Close()
 }
@@ -64,7 +88,7 @@ function Write-StaticFile {
         $Context.Response.StatusCode = 200
         $Context.Response.ContentType = $contentType
         $Context.Response.ContentLength64 = $buffer.Length
-        $Context.Response.Headers.Add('X-Content-Type-Options', 'nosniff')
+        Add-SecurityResponseHeader -Context $Context
         if ($ext -ne '.html') { $Context.Response.Headers.Add('Cache-Control', 'public, max-age=3600') }
         else { $Context.Response.Headers.Add('Cache-Control', 'no-cache') }
         $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)

@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- Everything is served from this origin. script-src is strict — no inline handlers
          remain. style-src still allows inline because the views use style="" attributes;
-         those are static markup, not request data. -->
+         those are static markup, not request data. This meta tag is a fallback only:
+         frame-ancestors has no effect via <meta> per spec, so the server sends the same
+         policy (plus X-Frame-Options) as a real header on every response —
+         Add-SecurityResponseHeader in Write-HttpResponse.ps1 is the actual enforcement. -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'">
     <title>Nexus — Module Hub</title>
     <link rel="stylesheet" href="css/style.css">

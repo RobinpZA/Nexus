@@ -141,7 +141,15 @@ GET /api/jobs/{id}
 
 ## Configuration
 
-Nexus reads configuration from:
+Nexus keeps user state — settings, the module registry, and logs — outside the module
+folder, at `%LOCALAPPDATA%\Nexus` by default. This survives `Update-Module` (which
+installs each version into its own folder) and works when the module is installed
+AllUsers, where the module folder isn't writable. Set `$env:NEXUS_HOME` to point
+Nexus somewhere else, e.g. to keep working out of a repo checkout during development.
+
+The first run seeds `%LOCALAPPDATA%\Nexus\Config` from the module's own `Config/`
+defaults. From then on the module's `Config/` folder is read-only template data —
+Nexus never writes back to it.
 
 - `Config/settings.json` (portal behavior, ports, scan settings)
 - `Config/modules.json` (module registry)
@@ -176,6 +184,7 @@ Common defaults include:
 ```text
 Public/   Exported user commands
 Private/  Internal implementation
+Workers/  Standalone script launched as a child process for isolated modules
 Assets/   Portal UI (HTML/CSS/JS)
 Config/   Settings and module registry
 Tests/    Pester test suite
