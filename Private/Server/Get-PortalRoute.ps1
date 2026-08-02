@@ -73,8 +73,8 @@ function Get-PortalRoute {
         @{ Pattern = '^/api/favourites$'; Methods = @('GET', 'POST', 'DELETE')
            Handler = { param($R) Invoke-PortalFavourite -Context $R.Context } }
 
-        @{ Pattern = '^/api/recent$'; Methods = @('GET')
-           Handler = { param($R) Get-PortalRecent -Context $R.Context } }
+        @{ Pattern = '^/api/recent$'; Methods = @('GET', 'DELETE')
+           Handler = { param($R) Invoke-PortalRecent -Context $R.Context } }
 
         # ── Shutdown ──
         @{ Pattern = '^/api/shutdown$'; Methods = @('POST')

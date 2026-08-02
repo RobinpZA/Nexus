@@ -151,19 +151,28 @@ function Invoke-PortalFavourite {
     Write-JsonResponse -Context $Context -Data @{ success = $true; favourites = @($settings.favouriteCommands) }
 }
 
-function Get-PortalRecent {
+function Invoke-PortalRecent {
     <#
     .SYNOPSIS
-        API handler: GET /api/recent
+        API handler: GET/DELETE /api/recent
     .PARAMETER Context
         The HttpListenerContext for the current request.
     .EXAMPLE
-        Get-PortalRecent -Context $Context
+        Invoke-PortalRecent -Context $Context
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][System.Net.HttpListenerContext]$Context)
 
     $settings = Read-HubSettings
+
+    if ($Context.Request.HttpMethod -eq 'DELETE') {
+        $settings.recentCommands = @()
+        Save-HubSettings -Settings $settings
+        Write-HubLog -Level Info -Message 'Recent commands cleared'
+        Write-JsonResponse -Context $Context -Data @{ success = $true; recent = @() }
+        return
+    }
+
     Write-JsonResponse -Context $Context -Data @{ recent = @($settings.recentCommands) }
 }
 

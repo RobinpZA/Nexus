@@ -6,6 +6,12 @@
 
 Central PowerShell module hub with a local web portal for discovering, importing, and invoking commands across your private modules.
 
+## Demo
+
+<p align="center">
+	<img src="Assets/docs/demo.gif" alt="Nexus portal demo" width="720" />
+</p>
+
 ## Why Nexus
 
 - One place to register and manage internal PowerShell modules
@@ -105,7 +111,7 @@ Paste the same auto-start block into that profile.
 
 ### Notes
 
-- `Start-Nexus` is a blocking listener, so starting it in a separate process keeps your current terminal usable.
+- `Start-Nexus` is a blocking listener — calling it directly occupies your current terminal until you stop it. The auto-start block above runs it via `Start-Process pwsh -WindowStyle Hidden ...` instead, so it launches in a separate hidden process and your terminal stays usable.
 - Remove `-NoBrowser` if you want the portal tab to open automatically on startup.
 - If you changed `defaultPort` in settings, update the health URL accordingly.
 

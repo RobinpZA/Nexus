@@ -55,6 +55,7 @@ const App = {
                 case 'run': this.runCommand(d.module,d.command); return;
                 case 'fav': this.addFavourite(d.module,d.command); return;
                 case 'unfav': this.removeFavourite(d.module,d.command); return;
+                case 'clear-recent': this.clearRecent(); return;
                 case 'remove-scan-root': this.removeScanRoot(d.path); return;
                 case 'add-scan-root': this.addScanRoot(); return;
                 case 'load-desc': CommandsUI.fetchDescriptions(d.module); return;
@@ -80,7 +81,7 @@ const App = {
     async renderDashboard(el) {
         el.innerHTML=Components.loading(); await this.loadModules(); await this.loadHealth();
         const mods=this.state.modules, health=this.state.health||{}, healthy=health.healthy||0, total=health.total||mods.length, {custom,published}=this.groupBySource(mods);
-        let recentHtml=''; try { const rd=await API.getRecent(); const recent=rd.recent||[]; if(recent.length>0) recentHtml=`<div class="section-title">Recent Commands</div><div class="table-container"><ul class="recent-list">${recent.slice(0,10).map(r=>Components.recentItem(r)).join('')}</ul></div>`; } catch(e){}
+        let recentHtml=''; try { const rd=await API.getRecent(); const recent=rd.recent||[]; if(recent.length>0) recentHtml=`<div class="section-title" style="display:flex;align-items:center;justify-content:space-between">Recent Commands<button class="btn btn-sm" data-action="clear-recent">Clear</button></div><div class="table-container"><ul class="recent-list">${recent.slice(0,10).map(r=>Components.recentItem(r)).join('')}</ul></div>`; } catch(e){}
         let favHtml=''; try { const fd=await API.getFavourites(); const favs=fd.favourites||[]; if(favs.length>0) favHtml=`<div class="section-title">Favourites</div><div class="table-container"><ul class="recent-list">${favs.map(f=>Components.favouriteItem(f)).join('')}</ul></div>`; } catch(e){}
         const svgM='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>';
         const svgO='<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
@@ -156,6 +157,7 @@ const App = {
     },
     async addFavourite(mn,cn){try{await API.addFavourite(mn,cn);Components.toast(`Added ${cn}`,'success');}catch(e){Components.toast(e.message,'error');}},
     async removeFavourite(mn,cn){try{await API.removeFavourite(mn,cn);Components.toast(`Removed ${cn}`,'success');if(window.location.hash==='#/'||window.location.hash==='#'||!window.location.hash)this.route();}catch(e){Components.toast(e.message,'error');}},
+    async clearRecent(){try{await API.clearRecent();Components.toast('Recent commands cleared','success');this.route();}catch(e){Components.toast(e.message,'error');}},
 
     async renderSettings(el) {
         el.innerHTML=Components.loading(); let settings={}; try{settings=await API.getSettings();}catch(e){}

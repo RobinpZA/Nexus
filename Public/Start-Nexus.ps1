@@ -30,7 +30,7 @@ function Start-Nexus {
 
     Write-Host ''
     Write-Host '  ┌─────────────────────────────────────────┐' -ForegroundColor DarkCyan
-    Write-Host ("  │ {0,-39}│" -f $bannerTitle) -ForegroundColor DarkCyan
+    Write-Host ("  │ {0,-39} │" -f $bannerTitle) -ForegroundColor DarkCyan
     Write-Host '  │   Central PowerShell Module Hub         │' -ForegroundColor DarkCyan
     Write-Host '  └─────────────────────────────────────────┘' -ForegroundColor DarkCyan
     Write-Host ''

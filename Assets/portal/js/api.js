@@ -102,6 +102,10 @@ const API = {
         return this._fetch('/api/recent');
     },
 
+    async clearRecent() {
+        return this._fetch('/api/recent', { method: 'DELETE' });
+    },
+
     // ── Shutdown ──
     async shutdown() {
         return this._fetch('/api/shutdown', { method: 'POST' });
