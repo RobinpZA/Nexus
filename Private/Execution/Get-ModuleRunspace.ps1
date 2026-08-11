@@ -196,14 +196,19 @@ function New-ProcessContext {
         return $null
     }
 
+    # Start-Process joins -ArgumentList entries with spaces without quoting them, so a
+    # path containing a space (a OneDrive folder, "Program Files") is split into separate
+    # arguments and pwsh exits immediately with "is not recognized as the name of a script
+    # file". Every path value is quoted here — Windows paths cannot contain a double quote,
+    # so wrapping is enough.
     $pwshPath = (Get-Process -Id $PID).Path
     $proc = Start-Process -FilePath $pwshPath `
         -ArgumentList @(
             '-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass',
-            '-File', $workerPath,
-            '-ModulePath', $ModuleEntry.path,
-            '-ModuleName', $name,
-            '-CommsDir', $commsDir
+            '-File', "`"$workerPath`"",
+            '-ModulePath', "`"$($ModuleEntry.path)`"",
+            '-ModuleName', "`"$name`"",
+            '-CommsDir', "`"$commsDir`""
         ) `
         -WindowStyle Minimized `
         -PassThru

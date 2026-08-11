@@ -360,3 +360,69 @@ Describe 'Execution: Background Job Sweep' {
         $funcDef | Should -Match 'Sync-BackgroundJob'
     }
 }
+
+Describe 'Execution: Process Worker Launch' {
+    # Start-Process joins -ArgumentList entries with a space and does NOT quote them. An
+    # unquoted path containing a space (any OneDrive folder, "Program Files") therefore
+    # reached pwsh split across several arguments: the worker died instantly with
+    # "'C:\Users\...\OneDrive' is not recognized as the name of a script file", every
+    # process-isolated module failed with "Failed to create context", and the portal
+    # showed "Command not found" for all of them.
+
+    It 'Quotes the paths it passes to the worker so a space cannot split them' {
+        $captured = & (Get-Module Nexus) {
+            $originalLogDir = $script:LogDir
+            $script:LogDir = Join-Path ([System.IO.Path]::GetTempPath()) 'Nexus Launch Test'
+            New-Item $script:LogDir -ItemType Directory -Force | Out-Null
+
+            # Stand in for Start-Process: record the arguments and signal ready so
+            # New-ProcessContext returns instead of waiting out its 60s timeout.
+            $script:CapturedLaunch = $null
+            function Start-Process {
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '',
+                    Justification = 'Deliberate stub, removed in the finally block.')]
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+                    Justification = 'Signature mirrors the real call site; only ArgumentList is asserted on.')]
+                param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru)
+                $script:CapturedLaunch = $ArgumentList
+                $commsDir = ($ArgumentList[-1]).Trim('"')
+                'ready' | Out-File (Join-Path $commsDir 'ready') -Encoding utf8
+                [PSCustomObject]@{ Id = 4242; HasExited = $false }
+            }
+
+            try {
+                $entry = @{
+                    name = 'SpacedModule'
+                    path = Join-Path ([System.IO.Path]::GetTempPath()) 'Spaced Module' 'Spaced Module.psd1'
+                }
+                $null = New-ProcessContext -ModuleEntry ([PSCustomObject]$entry)
+
+                [PSCustomObject]@{
+                    Arguments  = $script:CapturedLaunch
+                    WorkerPath = Join-Path $script:NexusRoot 'Workers' 'ProcessWorker.ps1'
+                    ModulePath = $entry.path
+                    CommsDir   = Join-Path $script:LogDir 'process_SpacedModule'
+                }
+            } finally {
+                Remove-Item $script:LogDir -Recurse -Force -ErrorAction SilentlyContinue
+                $script:ModuleRunspaces.Remove('SpacedModule')
+                $script:LogDir = $originalLogDir
+                Remove-Item Function:\Start-Process -ErrorAction SilentlyContinue
+            }
+        }
+
+        $captured.Arguments | Should -Not -BeNullOrEmpty
+
+        # Re-split the command line the way the child process would see it, so this
+        # asserts the paths actually survive as single arguments — not just that the
+        # source happens to contain quote characters.
+        $commandLine = $captured.Arguments -join ' '
+        $parsed = @([regex]::Matches($commandLine, '"([^"]*)"|(\S+)') | ForEach-Object {
+            if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value }
+        })
+
+        $parsed[[array]::IndexOf($parsed, '-File') + 1]       | Should -Be $captured.WorkerPath
+        $parsed[[array]::IndexOf($parsed, '-ModulePath') + 1] | Should -Be $captured.ModulePath
+        $parsed[[array]::IndexOf($parsed, '-CommsDir') + 1]   | Should -Be $captured.CommsDir
+    }
+}
