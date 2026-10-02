@@ -112,8 +112,22 @@ Paste the same auto-start block into that profile.
 ### Notes
 
 - `Start-Nexus` is a blocking listener — calling it directly occupies your current terminal until you stop it. The auto-start block above runs it via `Start-Process pwsh -WindowStyle Hidden ...` instead, so it launches in a separate hidden process and your terminal stays usable.
-- Remove `-NoBrowser` if you want the portal tab to open automatically on startup.
+- Remove `-NoBrowser` if you want the portal tab to open automatically on startup, or run `Open-Nexus` when you want the portal.
 - If you changed `defaultPort` in settings, update the health URL accordingly.
+
+## Session Token
+
+Every `/api/*` route except `/api/health` requires a per-session token. `Start-Nexus`
+generates it, opens the portal with `?token=...`, and the portal swaps it for an
+HttpOnly, SameSite=Strict cookie. The token is also written to `session.json` under the
+Nexus data root, which `Open-Nexus` reads. Script clients send it as `X-Nexus-Token`:
+
+```powershell
+$session = Get-Content "$env:LOCALAPPDATA\Nexus\session.json" | ConvertFrom-Json
+Invoke-RestMethod "$($session.url)api/modules" -Headers @{ 'X-Nexus-Token' = $session.token }
+```
+
+Unauthenticated `/api/health` returns the summary only, without module names or paths.
 
 ## Execution Model
 
@@ -123,6 +137,8 @@ Nexus runs module commands in isolated execution contexts so modules can keep th
 - Modules that depend on conflicting ecosystems such as Microsoft Graph, Exchange Online, or Teams are automatically moved to process isolation.
 - Async commands return immediately with a job id, and the portal polls job status until the result is ready.
 - Only one async command can run at a time for a given module runspace to avoid pipeline collisions.
+- Every path (session, runspace, process) binds parameters through one function, `ConvertTo-BoundParameter`: `"false"` is false for `[bool]`/`[switch]`, comma-separated text splits for array parameters, and blank fields are skipped.
+- Commands that return objects show as a table in the portal, with CSV export. Each output line carries `data`, a flat property map, beside its `message` text.
 
 You can inspect async job progress through the portal API:
 
@@ -136,6 +152,7 @@ GET /api/jobs/{id}
 |---|---|
 | `Start-Nexus` | Start the local Nexus HTTP listener and portal |
 | `Stop-Nexus` | Stop the running Nexus listener |
+| `Open-Nexus` | Open the running portal in the browser with a valid session |
 | `Enable-NexusAutoStart` | Add/update a profile block to auto-start Nexus when PowerShell launches |
 | `Get-OpsModule` | List modules in the registry |
 | `Import-OpsModule` | Import a registered module |

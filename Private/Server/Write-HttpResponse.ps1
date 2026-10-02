@@ -119,6 +119,7 @@ function Write-ErrorResponse {
     # Generic message to client — no stack traces, no internal paths
     $safeMessage = switch ($StatusCode) {
         400 { $Message }   # Bad request messages are intentional (e.g. "Missing field: module")
+        401 { $Message }   # Tells the user how to get a session; reveals nothing
         403 { 'Forbidden' }
         404 { $Message }   # "Not found" is safe
         405 { $Message }   # Method not allowed is safe

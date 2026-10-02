@@ -66,15 +66,26 @@ function Start-Nexus {
         $listenerParams['PortRangeEnd']   = $settings.portRange[1]
     }
 
+    $script:SessionToken = New-SessionToken
     $server = Start-HttpListener @listenerParams
+
+    # Open-Nexus reads this to reopen the portal later. It lives under the per-user data
+    # root (%LOCALAPPDATA% by default), which other users cannot read.
+    $sessionFile = Join-Path $script:DataRoot 'session.json'
+    @{
+        url        = $server.Url
+        token      = $script:SessionToken
+        pid        = $PID
+        startedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    } | ConvertTo-Json | Set-Content -Path $sessionFile -Encoding utf8
 
     # Open browser
     if (-not $NoBrowser -and $settings.openBrowserOnStart) {
         Start-Sleep -Milliseconds 500
         try {
-            Start-Process $server.Url
+            Start-Process "$($server.Url)?token=$($script:SessionToken)"
         } catch {
-            Write-HubLog -Level Warning -Message "Could not open browser. Navigate to $($server.Url) manually."
+            Write-HubLog -Level Warning -Message 'Could not open browser. Run Open-Nexus to open the portal.'
         }
     }
 
@@ -96,6 +107,8 @@ function Start-Nexus {
         }
         $server.Listener.Dispose()
         $script:Listener = $null
+        $script:SessionToken = $null
+        Remove-Item -Path $sessionFile -Force -ErrorAction SilentlyContinue
         # Close module runspaces and child processes — otherwise every session leaves
         # a pwsh worker per process-isolated module running.
         Stop-ModuleContext

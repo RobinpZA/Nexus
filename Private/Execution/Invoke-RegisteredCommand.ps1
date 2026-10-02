@@ -78,20 +78,13 @@
         }
     }
 
-    # ── 4. Bind parameters (type coercion) ──
-    $boundParams = @{}
-    foreach ($key in $Parameters.Keys) {
-        $value = $Parameters[$key]
-        $paramInfo = $cmd.Parameters[$key]
-        if ($paramInfo -and ($paramInfo.ParameterType -eq [switch] -or $paramInfo.ParameterType -eq [bool])) {
-            # [bool]'false' is $true, so match the text explicitly.
-            $boundParams[$key] = ($value -is [bool] -and $value) -or ("$value".Trim().ToLower() -in @('true', '1', 'yes', 'on'))
-        } elseif ($paramInfo -and $paramInfo.ParameterType -eq [int]) {
-            $boundParams[$key] = [int]$value
-        } elseif ($paramInfo -and $paramInfo.ParameterType -eq [string[]]) {
-            if ($value -is [string]) { $boundParams[$key] = @($value -split ',\s*') } else { $boundParams[$key] = @($value) }
-        } else {
-            $boundParams[$key] = $value
+    # ── 4. Bind parameters (type coercion) — see ConvertTo-BoundParameter ──
+    try {
+        $boundParams = ConvertTo-BoundParameter -Command $cmd -Parameters $Parameters
+    } catch {
+        return [PSCustomObject]@{
+            success = $false; module = $ModuleEntry.name; command = $CommandName; durationMs = 0
+            output = @([PSCustomObject]@{ stream = 'Error'; message = $_.Exception.Message })
         }
     }
 

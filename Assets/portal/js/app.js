@@ -32,6 +32,7 @@ const App = {
         if (footerVersion) footerVersion.textContent = `Nexus v${version}`;
     },
     route() {
+        if (API.unauthorised) return;
         const hash=window.location.hash||'#/', content=document.getElementById('content');
         document.querySelectorAll('.nav-link').forEach(l=>{l.classList.remove('active');const h=l.getAttribute('href');if(hash===h||(h!=='#/'&&hash.startsWith(h)))l.classList.add('active');});
         if(hash==='#/'||hash==='#') this.renderDashboard(content);
@@ -63,6 +64,7 @@ const App = {
                 case 'scan': this.scanRegistry(); return;
                 case 'shutdown': this.shutdown(); return;
                 case 'copy-output': Components.copyOutput(); return;
+                case 'export-csv': Components.exportCsv(); return;
                 case 'toggle-category': { const c=action.closest('.cmd-category'); if(c) c.classList.toggle('collapsed'); return; }
             }
         }

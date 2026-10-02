@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Nexus.psm1'
-    ModuleVersion     = '1.2.0'
+    ModuleVersion     = '1.3.0'
     GUID              = '86147d2b-ae69-4971-8b44-06af60f8418b'
     Author            = 'Robin Pieterse'
     CompanyName       = 'Turrito Networks'
@@ -10,6 +10,7 @@
     FunctionsToExport = @(
         'Start-Nexus'
         'Stop-Nexus'
+        'Open-Nexus'
         'Enable-NexusAutoStart'
         'Get-OpsModule'
         'Import-OpsModule'

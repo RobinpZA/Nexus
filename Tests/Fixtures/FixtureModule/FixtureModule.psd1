@@ -6,7 +6,7 @@
     CompanyName       = 'Turrito Networks'
     Description       = 'Test fixture module for the Nexus suite.'
     PowerShellVersion = '7.2'
-    FunctionsToExport = @('Get-FixtureValue', 'Get-FixtureContext', 'Write-FixtureFailure')
+    FunctionsToExport = @('Get-FixtureValue', 'Get-FixtureContext', 'Write-FixtureFailure', 'Get-FixtureObject', 'Join-FixtureList')
     CmdletsToExport   = @()
     AliasesToExport   = @()
 }

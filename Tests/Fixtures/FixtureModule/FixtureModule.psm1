@@ -39,3 +39,31 @@ function Write-FixtureFailure {
 
     Write-Error 'fixture failure'
 }
+
+function Get-FixtureObject {
+    <#
+    .SYNOPSIS
+        Returns objects, for exercising structured (table) output.
+    #>
+    [CmdletBinding()]
+    param()
+
+    [PSCustomObject]@{ Name = 'alpha'; Count = 1; Enabled = $true }
+    [PSCustomObject]@{ Name = 'beta'; Count = 2; Enabled = $false }
+}
+
+function Join-FixtureList {
+    <#
+    .SYNOPSIS
+        Describes its typed inputs, for exercising parameter conversion.
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$Items,
+        [int[]]$Numbers,
+        [bool]$Flag,
+        [int]$Top
+    )
+
+    "items=$($Items -join '|');numbers=$(($Numbers | Measure-Object -Sum).Sum);flag=$Flag;top=$($Top + 1)"
+}

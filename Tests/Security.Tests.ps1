@@ -379,3 +379,119 @@ Describe 'Security: Enable-NexusAutoStart Supports ShouldProcess' {
         }
     }
 }
+
+Describe 'Security: Session Token' {
+    # Any local process can reach 127.0.0.1. The origin guard stops web pages; the token
+    # stops local callers that were never handed it.
+
+    It 'Accepts the token from the header or the cookie' {
+        & (Get-Module Nexus) {
+            Test-SessionToken -Expected 'abc123' -Header 'abc123' | Should -BeTrue
+            Test-SessionToken -Expected 'abc123' -Cookie 'abc123' | Should -BeTrue
+        }
+    }
+
+    It 'Rejects a wrong or missing token' {
+        & (Get-Module Nexus) {
+            Test-SessionToken -Expected 'abc123' -Header 'abc124' | Should -BeFalse
+            Test-SessionToken -Expected 'abc123' | Should -BeFalse
+        }
+    }
+
+    It 'Fails closed when no session token is set' {
+        & (Get-Module Nexus) {
+            Test-SessionToken -Expected $null -Header '' -Cookie '' | Should -BeFalse
+            Test-SessionToken -Expected '' -Header 'x' | Should -BeFalse
+        }
+    }
+
+    It 'Generates a distinct 64-character token each time' {
+        & (Get-Module Nexus) {
+            $a = New-SessionToken; $b = New-SessionToken
+            $a | Should -Match '^[0-9a-f]{64}$'
+            $a | Should -Not -Be $b
+        }
+    }
+}
+
+Describe 'Security: Session Token Enforced By The Router' {
+    BeforeAll {
+        $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $probe.Start(); $script:Port = $probe.LocalEndpoint.Port; $probe.Stop()
+
+        $script:Base = "http://127.0.0.1:$script:Port"
+        $script:HttpListener = [System.Net.HttpListener]::new()
+        $script:HttpListener.Prefixes.Add("$script:Base/")
+        $script:HttpListener.Start()
+
+        $handler = [System.Net.Http.HttpClientHandler]::new()
+        $handler.AllowAutoRedirect = $false
+        $handler.UseCookies = $false
+        $script:Client = [System.Net.Http.HttpClient]::new($handler)
+        $script:Token = 'test-session-token'
+        & (Get-Module Nexus) { param($t) $script:SessionToken = $t } $script:Token
+
+        # Sends from the thread pool while this thread serves the one request through the
+        # real router, so no background listener loop is needed.
+        function Send-TestRequest {
+            param([string]$Method = 'GET', [string]$Path, [hashtable]$Headers = @{}, [string]$Json)
+            $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), "$script:Base$Path")
+            foreach ($k in $Headers.Keys) { $null = $req.Headers.TryAddWithoutValidation($k, $Headers[$k]) }
+            if ($Json) { $req.Content = [System.Net.Http.StringContent]::new($Json, [System.Text.Encoding]::UTF8, 'application/json') }
+            $task = $script:Client.SendAsync($req)
+            $ctx = $script:HttpListener.GetContext()
+            & (Get-Module Nexus) { param($c) Invoke-RequestRouter -Context $c } $ctx
+            return $task.GetAwaiter().GetResult()
+        }
+    }
+
+    AfterAll {
+        & (Get-Module Nexus) { $script:SessionToken = $null }
+        $script:Client.Dispose()
+        $script:HttpListener.Close()
+    }
+
+    It 'Rejects an API call without the token' {
+        $res = Send-TestRequest -Method POST -Path '/api/execute' -Json '{"module":"FixtureModule","command":"Get-FixtureValue"}'
+        [int]$res.StatusCode | Should -Be 401
+    }
+
+    It 'Rejects a mixed-case API path without the token' {
+        $res = Send-TestRequest -Method POST -Path '/API/Execute' -Json '{"module":"FixtureModule","command":"Get-FixtureValue"}'
+        [int]$res.StatusCode | Should -Be 401
+    }
+
+    It 'Accepts an API call carrying the token header' {
+        $res = Send-TestRequest -Path '/api/modules' -Headers @{ 'X-Nexus-Token' = $script:Token }
+        [int]$res.StatusCode | Should -Be 200
+    }
+
+    It 'Accepts an API call carrying the session cookie' {
+        $res = Send-TestRequest -Path '/api/modules' -Headers @{ Cookie = "nexus_session_$($script:Port)=$($script:Token)" }
+        [int]$res.StatusCode | Should -Be 200
+    }
+
+    It 'Serves health without the token, but without module paths' {
+        $res = Send-TestRequest -Path '/api/health'
+        [int]$res.StatusCode | Should -Be 200
+        $body = $res.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+        $body.status | Should -Not -BeNullOrEmpty
+        $body.PSObject.Properties.Name | Should -Not -Contain 'modules'
+    }
+
+    It 'Swaps a valid ?token= for an HttpOnly cookie and redirects' {
+        $res = Send-TestRequest -Path "/?token=$($script:Token)"
+        [int]$res.StatusCode | Should -Be 302
+        $res.Headers.Location.OriginalString | Should -Be '/'
+        $cookie = @($res.Headers.GetValues('Set-Cookie'))[0]
+        $cookie | Should -Match "^nexus_session_$($script:Port)=$($script:Token);"
+        $cookie | Should -Match 'HttpOnly'
+        $cookie | Should -Match 'SameSite=Strict'
+    }
+
+    It 'Serves the page without a cookie for an invalid ?token=' {
+        $res = Send-TestRequest -Path '/?token=wrong'
+        [int]$res.StatusCode | Should -Be 200
+        $res.Headers.Contains('Set-Cookie') | Should -BeFalse
+    }
+}

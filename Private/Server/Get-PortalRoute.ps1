@@ -8,7 +8,9 @@ function Get-PortalRoute {
         the methods it accepts, so an unhandled combination answers 405 instead of
         leaving the request open.
 
-        Each handler takes one argument: a hashtable with Context, Match and Query.
+        Each handler takes one argument: a hashtable with Context, Match, Query and
+        Authenticated. Every /api/* route except /api/health requires the session token —
+        Invoke-RequestRouter enforces that before a handler runs.
     .EXAMPLE
         foreach ($route in Get-PortalRoute) { if ($path -match $route.Pattern) { ... } }
     #>
@@ -53,7 +55,7 @@ function Get-PortalRoute {
 
         # ── Health ──
         @{ Pattern = '^/api/health$'; Methods = @('GET')
-           Handler = { param($R) Get-PortalHealth -Context $R.Context } }
+           Handler = { param($R) Get-PortalHealth -Context $R.Context -Detailed:$R.Authenticated } }
 
         # ── Registry scan ──
         @{ Pattern = '^/api/registry/scan$'; Methods = @('POST')

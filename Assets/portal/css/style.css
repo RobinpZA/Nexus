@@ -217,6 +217,12 @@ select.form-control { cursor: pointer; }
 .console-line.warning { color: var(--warning); }
 .console-line.info, .console-line.information { color: var(--info); }
 .console-line.verbose, .console-line.debug { color: var(--text-muted); }
+.console-actions { display: flex; gap: 8px; }
+.console-table-wrap { overflow-x: auto; margin: 4px 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.console-table { font-size: 12px; }
+.console-table th { padding: 6px 10px; position: sticky; top: 0; white-space: nowrap; }
+.console-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: pre-wrap; word-break: break-word; max-width: 420px; }
+.console-table tbody tr:hover { background: var(--bg-surface-hover); }
 .console-empty { color: var(--text-muted); font-style: italic; text-align: center; padding: 40px; }
 
 /* ═══════════════════════════════════════════════════════════

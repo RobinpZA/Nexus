@@ -426,3 +426,155 @@ Describe 'Execution: Process Worker Launch' {
         $parsed[[array]::IndexOf($parsed, '-CommsDir') + 1]   | Should -Be $captured.CommsDir
     }
 }
+
+Describe 'Atomic file handoff' {
+    # The process channel polls command.json/response.json; a reader must never see a
+    # half-written file.
+
+    It 'Writes the full content and leaves no temp file behind' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "NexusAtomic_$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        try {
+            $path = Join-Path $dir 'response.json'
+            & (Get-Module Nexus) { param($p) Write-AtomicFile -Path $p -Value '{"a":1}' } $path
+            & (Get-Module Nexus) { param($p) Write-AtomicFile -Path $p -Value '{"a":2}' } $path
+
+            Get-Content $path -Raw | Should -Be '{"a":2}'
+            @(Get-ChildItem $dir -Filter '*.tmp').Count | Should -Be 0
+        } finally {
+            Remove-Item $dir -Recurse -Force
+        }
+    }
+
+    It 'Writes UTF-8 without a BOM' {
+        $path = Join-Path ([System.IO.Path]::GetTempPath()) "NexusAtomic_$([guid]::NewGuid().ToString('N')).json"
+        try {
+            & (Get-Module Nexus) { param($p) Write-AtomicFile -Path $p -Value 'x' } $path
+            [System.IO.File]::ReadAllBytes($path)[0] | Should -Be ([byte][char]'x')
+        } finally {
+            Remove-Item $path -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'The worker never writes its channel files with Out-File' {
+        $worker = Join-Path $PSScriptRoot '..' 'Workers' 'ProcessWorker.ps1'
+        Get-Content $worker -Raw | Should -Not -Match 'Out-File'
+    }
+}
+
+Describe 'Execution: Parameter Conversion' {
+    BeforeAll {
+        Import-Module (Join-Path $PSScriptRoot 'Fixtures' 'FixtureModule' 'FixtureModule.psd1') -Force
+        $script:JoinCmd = Get-Command Join-FixtureList -Module FixtureModule
+        $script:ValueCmd = Get-Command Get-FixtureValue -Module FixtureModule
+    }
+    AfterAll { Remove-Module FixtureModule -ErrorAction SilentlyContinue }
+
+    It 'Splits comma-separated text for array parameters' {
+        $bound = & (Get-Module Nexus) { param($c) ConvertTo-BoundParameter -Command $c -Parameters @{ Items = 'a, b ,c'; Numbers = '1,2' } } $script:JoinCmd
+        $bound.Items | Should -Be @('a', 'b', 'c')
+        $bound.Numbers | Should -Be @('1', '2')
+    }
+
+    It 'Keeps a JSON array as an array' {
+        $bound = & (Get-Module Nexus) { param($c) ConvertTo-BoundParameter -Command $c -Parameters @{ Items = @('x', 'y') } } $script:JoinCmd
+        $bound.Items | Should -Be @('x', 'y')
+    }
+
+    It 'Treats "false" as false for [bool] and [switch]' {
+        $bound = & (Get-Module Nexus) { param($c) ConvertTo-BoundParameter -Command $c -Parameters @{ Flag = 'false' } } $script:JoinCmd
+        $bound.Flag | Should -BeFalse
+        $bound = & (Get-Module Nexus) { param($c) ConvertTo-BoundParameter -Command $c -Parameters @{ Loud = 'False' } } $script:ValueCmd
+        $bound.Loud | Should -BeFalse
+    }
+
+    It 'Drops blank values instead of binding empty strings' {
+        $bound = & (Get-Module Nexus) { param($c) ConvertTo-BoundParameter -Command $c -Parameters @{ Items = '  '; Top = '' } } $script:JoinCmd
+        $bound.Count | Should -Be 0
+    }
+
+    It 'Rejects a parameter the command does not declare' {
+        { & (Get-Module Nexus) { param($c) ConvertTo-BoundParameter -Command $c -Parameters @{ Nope = 1 } } $script:JoinCmd } |
+            Should -Throw '*not valid*'
+    }
+
+    It 'Produces values the binder accepts end to end' {
+        $bound = & (Get-Module Nexus) { param($c) ConvertTo-BoundParameter -Command $c -Parameters @{ Items = 'a,b'; Numbers = '2, 3'; Flag = 'true'; Top = '4' } } $script:JoinCmd
+        Join-FixtureList @bound | Should -Be 'items=a|b;numbers=5;flag=True;top=5'
+    }
+}
+
+Describe 'Execution: Structured Output' {
+
+    It 'Adds a flat data map for objects' {
+        $out = & (Get-Module Nexus) { ConvertTo-HubOutput -Records @([PSCustomObject]@{ Name = 'a'; Count = 3; When = [datetime]'2026-01-02T03:04:05Z' }) }
+        $out[0].stream | Should -Be 'Success'
+        $out[0].data.Name | Should -Be 'a'
+        $out[0].data.Count | Should -Be 3
+        $out[0].data.When | Should -Match '^2026-01-02T'
+        $out[0].message | Should -Match '^Name=a; Count=3; When=2026'
+    }
+
+    It 'Leaves text and numbers without data' {
+        $out = & (Get-Module Nexus) { ConvertTo-HubOutput -Records @('text', 42) }
+        $out | ForEach-Object { $_.PSObject.Properties.Name | Should -Not -Contain 'data' }
+    }
+
+    It 'Uses dictionary keys as columns' {
+        $out = & (Get-Module Nexus) { ConvertTo-HubOutput -Records @(@{ Upn = 'x@y'; Licensed = $true }) }
+        $out[0].data.Upn | Should -Be 'x@y'
+        $out[0].data.Licensed | Should -BeTrue
+    }
+
+    It 'Flattens collection values into one cell' {
+        $out = & (Get-Module Nexus) { ConvertTo-HubOutput -Records @([PSCustomObject]@{ Tags = @('a', 'b') }) }
+        $out[0].data.Tags | Should -Be 'a; b'
+    }
+
+    It 'Uses the display property set when the type declares one' {
+        $obj = [PSCustomObject]@{ Name = 'a'; Id = 1; Secret = 'hidden'; Extra = 'x' }
+        $set = [System.Management.Automation.PSPropertySet]::new('DefaultDisplayPropertySet', [string[]]@('Name', 'Id'))
+        $obj | Add-Member -MemberType MemberSet -Name PSStandardMembers -Value ([System.Management.Automation.PSMemberInfo[]]@($set))
+
+        $out = & (Get-Module Nexus) { param($o) ConvertTo-HubOutput -Records @($o) } $obj
+        @($out[0].data.Keys) | Should -Be @('Name', 'Id')
+    }
+}
+
+Describe 'Execution: Process Worker End To End' {
+    # Runs the real worker in a child pwsh, so the file channel, binder and output
+    # shaping are exercised across the process boundary — not stubbed.
+
+    BeforeAll {
+        . (Join-Path $PSScriptRoot 'TestRegistry.ps1')
+        $script:TestRegistry = Enter-TestRegistry -FixtureRoot (Join-Path $PSScriptRoot 'Fixtures')
+        $script:Entry = [PSCustomObject]@{
+            name = 'FixtureModule'; enabled = $true; isolation = 'process'
+            path = (Join-Path $PSScriptRoot 'Fixtures' 'FixtureModule' 'FixtureModule.psd1')
+        }
+    }
+
+    AfterAll {
+        & (Get-Module Nexus) { Stop-ModuleContext }
+        Exit-TestRegistry -Context $script:TestRegistry
+    }
+
+    It 'Returns table data from an object command' {
+        $result = & (Get-Module Nexus) { param($e) Invoke-InRunspace -ModuleEntry $e -CommandName 'Get-FixtureObject' } $script:Entry
+        $result.success | Should -BeTrue
+        @($result.output).Count | Should -Be 2
+        $result.output[1].data.Name | Should -Be 'beta'
+        $result.output[1].data.Enabled | Should -BeFalse
+    }
+
+    It 'Converts typed parameters in the worker' {
+        $result = & (Get-Module Nexus) { param($e) Invoke-InRunspace -ModuleEntry $e -CommandName 'Join-FixtureList' -Parameters @{ Items = 'a, b'; Flag = 'false'; Top = '1' } } $script:Entry
+        $result.success | Should -BeTrue
+        $result.output[0].message | Should -Be 'items=a|b;numbers=0;flag=False;top=2'
+    }
+
+    It 'Reports an error record as a failure' {
+        $result = & (Get-Module Nexus) { param($e) Invoke-InRunspace -ModuleEntry $e -CommandName 'Write-FixtureFailure' } $script:Entry
+        $result.success | Should -BeFalse
+    }
+}

@@ -31,10 +31,40 @@ const Components = {
         else input=`<input type="text" class="form-control" id="param-${pn}" data-param="${pn}" data-type="${pt}" placeholder="${pt}">`;
         return `<div class="form-group"><label>${this.esc(param.name)} ${req} ${tb}</label>${input}${hint}</div>`;
     },
+    // Consecutive success records that carry `data` (objects, not text) render as one
+    // table; everything else stays a console line. The last output is kept for CSV export.
     outputConsole(output,duration) {
-        const lines=(output||[]).map(o=>{const c=(o.stream||'success').toLowerCase();return `<div class="console-line ${c}">${this.esc(o.message)}</div>`;}).join('');
+        const items=output||[];
+        this.lastOutput=items;
+        let html='', rows=[];
+        const flush=()=>{ if(rows.length){ html+=this.outputTable(rows); rows=[]; } };
+        for(const o of items){
+            const c=this.esc((o.stream||'success').toLowerCase());
+            if(c==='success'&&o.data&&typeof o.data==='object'){ rows.push(o.data); continue; }
+            flush();
+            html+=`<div class="console-line ${c}">${this.esc(o.message)}</div>`;
+        }
+        flush();
         const dt=duration?` — ${duration}ms`:'';
-        return `<div class="console-container"><div class="console-header"><h4>Output${dt}</h4><button class="btn btn-sm" data-action="copy-output">📋 Copy</button></div><div class="console-body" id="consoleBody">${lines||'<div class="console-empty">No output yet. Click Run to execute the command.</div>'}</div></div>`;
+        const csv=this.outputRows().length?'<button class="btn btn-sm" data-action="export-csv">⬇ CSV</button>':'';
+        return `<div class="console-container"><div class="console-header"><h4>Output${dt}</h4><div class="console-actions">${csv}<button class="btn btn-sm" data-action="copy-output">📋 Copy</button></div></div><div class="console-body" id="consoleBody">${html||'<div class="console-empty">No output yet. Click Run to execute the command.</div>'}</div></div>`;
+    },
+    outputColumns(rows) { const cols=[]; for(const r of rows) for(const k of Object.keys(r)) if(!cols.includes(k)) cols.push(k); return cols; },
+    outputTable(rows) {
+        const cols=this.outputColumns(rows), cell=v=>v===null||v===undefined?'':this.esc(v);
+        return `<div class="console-table-wrap"><table class="console-table"><thead><tr>${cols.map(c=>`<th>${this.esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${cell(r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+    },
+    outputRows() { return (this.lastOutput||[]).filter(o=>(o.stream||'success').toLowerCase()==='success'&&o.data&&typeof o.data==='object').map(o=>o.data); },
+    // Quotes every field, and prefixes values Excel would run as a formula — output is
+    // tenant data, and a display name of "=HYPERLINK(...)" must stay text.
+    exportCsv() {
+        const rows=this.outputRows(); if(!rows.length) return;
+        const cols=this.outputColumns(rows);
+        const field=v=>{ let s=v===null||v===undefined?'':String(v); if(typeof v==='string'&&/^[=+\-@\t\r]/.test(s)) s="'"+s; return '"'+s.replace(/"/g,'""')+'"'; };
+        const csv=[cols.map(field).join(','),...rows.map(r=>cols.map(c=>field(r[c])).join(','))].join('\r\n');
+        const url=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'}));
+        const a=document.createElement('a'); a.href=url; a.download=`nexus-output-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
     },
     copyOutput() { const b=document.getElementById('consoleBody');if(b)navigator.clipboard.writeText(b.innerText).then(()=>Components.toast('Copied','success')); },
     statCard(value,label,colour,iconSvg) { return `<div class="stat-card"><div class="stat-icon ${colour}">${iconSvg}</div><div class="stat-info"><h3>${this.esc(value)}</h3><p>${this.esc(label)}</p></div></div>`; },
