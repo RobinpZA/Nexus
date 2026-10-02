@@ -32,7 +32,7 @@ function Send-ProcessRequest {
     # Drop a stale response from a previous, abandoned request.
     if (Test-Path $ProcessEntry.ResponseFile) { Remove-Item $ProcessEntry.ResponseFile -Force -ErrorAction SilentlyContinue }
 
-    $Request | ConvertTo-Json -Compress -Depth 5 | Out-File $ProcessEntry.CommandFile -Encoding utf8 -Force
+    Write-AtomicFile -Path $ProcessEntry.CommandFile -Value ($Request | ConvertTo-Json -Compress -Depth 5)
     return $ProcessEntry
 }
 

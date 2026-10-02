@@ -215,6 +215,7 @@ function New-ProcessContext {
 
     Write-HubLog -Level Info -Message "Process started: $name (PID $($proc.Id))"
 
+    $ready = $false
     $timeout = [DateTime]::Now.AddSeconds(60)
     while ([DateTime]::Now -lt $timeout) {
         if ($proc.HasExited) {
@@ -224,7 +225,7 @@ function New-ProcessContext {
         if (Test-Path $readyFile) {
             $readyContent = (Get-Content $readyFile -Raw).Trim()
             Remove-Item $readyFile -Force -ErrorAction SilentlyContinue
-            if ($readyContent -eq 'ready') { break }
+            if ($readyContent -eq 'ready') { $ready = $true; break }
             else {
                 Write-HubLog -Level Error -Message "Process import failed for $name : $readyContent"
                 try { $proc.Kill() } catch { Write-HubLog -Level Debug -Message "Failed to terminate process for $name : $($_.Exception.Message)" }
@@ -232,6 +233,13 @@ function New-ProcessContext {
             }
         }
         Start-Sleep -Milliseconds 300
+    }
+
+    # Without this a worker still importing after 60 s was registered as ready anyway.
+    if (-not $ready) {
+        Write-HubLog -Level Error -Message "Process for $name did not become ready within 60 s"
+        try { $proc.Kill() } catch { Write-HubLog -Level Debug -Message "Failed to terminate process for $name : $($_.Exception.Message)" }
+        return $null
     }
 
     Write-HubLog -Level Info -Message "Process ready: $name (PID $($proc.Id))"

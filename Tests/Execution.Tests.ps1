@@ -426,3 +426,38 @@ Describe 'Execution: Process Worker Launch' {
         $parsed[[array]::IndexOf($parsed, '-CommsDir') + 1]   | Should -Be $captured.CommsDir
     }
 }
+
+Describe 'Atomic file handoff' {
+    # The process channel polls command.json/response.json; a reader must never see a
+    # half-written file.
+
+    It 'Writes the full content and leaves no temp file behind' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "NexusAtomic_$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        try {
+            $path = Join-Path $dir 'response.json'
+            & (Get-Module Nexus) { param($p) Write-AtomicFile -Path $p -Value '{"a":1}' } $path
+            & (Get-Module Nexus) { param($p) Write-AtomicFile -Path $p -Value '{"a":2}' } $path
+
+            Get-Content $path -Raw | Should -Be '{"a":2}'
+            @(Get-ChildItem $dir -Filter '*.tmp').Count | Should -Be 0
+        } finally {
+            Remove-Item $dir -Recurse -Force
+        }
+    }
+
+    It 'Writes UTF-8 without a BOM' {
+        $path = Join-Path ([System.IO.Path]::GetTempPath()) "NexusAtomic_$([guid]::NewGuid().ToString('N')).json"
+        try {
+            & (Get-Module Nexus) { param($p) Write-AtomicFile -Path $p -Value 'x' } $path
+            [System.IO.File]::ReadAllBytes($path)[0] | Should -Be ([byte][char]'x')
+        } finally {
+            Remove-Item $path -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'The worker never writes its channel files with Out-File' {
+        $worker = Join-Path $PSScriptRoot '..' 'Workers' 'ProcessWorker.ps1'
+        Get-Content $worker -Raw | Should -Not -Match 'Out-File'
+    }
+}
