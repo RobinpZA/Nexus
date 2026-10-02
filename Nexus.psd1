@@ -10,6 +10,7 @@
     FunctionsToExport = @(
         'Start-Nexus'
         'Stop-Nexus'
+        'Open-Nexus'
         'Enable-NexusAutoStart'
         'Get-OpsModule'
         'Import-OpsModule'

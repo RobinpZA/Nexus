@@ -44,7 +44,7 @@
 
     # ── Dynamic banner box ──
     $line1 = "Nexus is running on $url"
-    $line2 = 'Press Ctrl+C to stop'
+    $line2 = 'Open-Nexus opens the portal · Ctrl+C stops'
     $pad    = 3  # spaces inside the box on each side
     $width  = ([Math]::Max($line1.Length, $line2.Length)) + ($pad * 2)
 

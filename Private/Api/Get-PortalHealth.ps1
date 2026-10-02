@@ -2,10 +2,22 @@ function Get-PortalHealth {
     <#
     .SYNOPSIS
         API handler: GET /api/health — returns health status of all registered modules.
+    .DESCRIPTION
+        The only API route open without the session token, so the auto-start profile block
+        can tell whether Nexus is already running. Unauthenticated callers get the summary
+        only — module names and paths are registry contents, not liveness.
+    .PARAMETER Context
+        The HttpListenerContext for the current request.
+    .PARAMETER Detailed
+        Include per-module names, paths and status. Set when the request is authenticated.
+    .EXAMPLE
+        Get-PortalHealth -Context $Context -Detailed
     #>
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [System.Net.HttpListenerContext]$Context
+        [System.Net.HttpListenerContext]$Context,
+        [switch]$Detailed
     )
 
     $registry = Read-ModuleRegistry
@@ -27,10 +39,12 @@ function Get-PortalHealth {
     $healthy = ($modules | Where-Object { $_.status -eq 'healthy' }).Count
     $total   = $modules.Count
 
-    Write-JsonResponse -Context $Context -Data @{
+    $data = @{
         status  = if ($healthy -eq $total) { 'healthy' } else { 'degraded' }
         healthy = $healthy
         total   = $total
-        modules = $modules
     }
+    if ($Detailed) { $data.modules = $modules }
+
+    Write-JsonResponse -Context $Context -Data $data
 }

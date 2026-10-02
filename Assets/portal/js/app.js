@@ -32,6 +32,7 @@ const App = {
         if (footerVersion) footerVersion.textContent = `Nexus v${version}`;
     },
     route() {
+        if (API.unauthorised) return;
         const hash=window.location.hash||'#/', content=document.getElementById('content');
         document.querySelectorAll('.nav-link').forEach(l=>{l.classList.remove('active');const h=l.getAttribute('href');if(hash===h||(h!=='#/'&&hash.startsWith(h)))l.classList.add('active');});
         if(hash==='#/'||hash==='#') this.renderDashboard(content);

@@ -4,6 +4,18 @@
 
 const API = {
     baseUrl: window.location.origin,
+    unauthorised: false,
+
+    // The session cookie is set when the page is opened through Start-Nexus/Open-Nexus.
+    // Without it every API call answers 401, so show one clear message instead of a
+    // page of empty panels.
+    showUnauthorised() {
+        if (this.unauthorised) return;
+        this.unauthorised = true;
+        document.getElementById('content').innerHTML = Components.emptyState(
+            'No session',
+            'This tab has no valid Nexus session. Run Open-Nexus in PowerShell to open an authorised one.');
+    },
 
     async _fetch(path, options = {}) {
         try {
@@ -11,6 +23,7 @@ const API = {
                 headers: { 'Content-Type': 'application/json' },
                 ...options
             });
+            if (res.status === 401) this.showUnauthorised();
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ message: res.statusText }));
                 const error = new Error(err.message || `HTTP ${res.status}`);

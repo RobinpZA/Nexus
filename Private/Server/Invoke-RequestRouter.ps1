@@ -31,11 +31,28 @@ function Invoke-RequestRouter {
     # SECURITY: CSRF guard — reject state-changing requests from other origins.
     if (-not (Test-RequestOrigin -Context $Context)) { return }
 
+    # SECURITY: Session token — see New-SessionToken. The URL Start-Nexus/Open-Nexus
+    # opens carries ?token=; swap it for a cookie so it leaves the address bar.
+    if ($method -eq 'GET' -and $path -eq '/' -and $query['token'] -and
+        (Test-SessionToken -Expected $script:SessionToken -Header $query['token'])) {
+        Write-SessionCookieRedirect -Context $Context
+        return
+    }
+
+    # -like/-ne, not StartsWith: route patterns match case-insensitively, so a
+    # case-sensitive check here would let /API/execute through unauthenticated.
+    $isAuthenticated = Test-RequestSession -Context $Context
+    if ($path -like '/api/*' -and $path -ne '/api/health' -and -not $isAuthenticated) {
+        Write-HubLog -Level Warning -Message "Rejected unauthenticated $method $path" -Source 'Security'
+        Write-ErrorResponse -Context $Context -StatusCode 401 -Message 'Session token missing or invalid. Run Open-Nexus to open an authorised session.'
+        return
+    }
+
     try {
         foreach ($route in (Get-PortalRoute)) {
             if ($path -notmatch $route.Pattern) { continue }
             if (-not (Test-HttpMethod -Context $Context -Allowed $route.Methods)) { return }
-            $routeArgs = @{ Context = $Context; Match = $Matches; Query = $query }
+            $routeArgs = @{ Context = $Context; Match = $Matches; Query = $query; Authenticated = $isAuthenticated }
             & $route.Handler $routeArgs
             return
         }

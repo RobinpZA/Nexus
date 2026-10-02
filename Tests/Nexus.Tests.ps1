@@ -15,7 +15,7 @@ Describe 'Nexus Module' {
         Import-Module $script:modulePath -Force
         $commands = Get-Command -Module Nexus
         $expected = @(
-            'Start-Nexus', 'Stop-Nexus', 'Get-OpsModule', 'Import-OpsModule',
+            'Start-Nexus', 'Stop-Nexus', 'Open-Nexus', 'Get-OpsModule', 'Import-OpsModule',
             'Get-OpsCommand', 'Invoke-OpsCommand', 'Register-OpsModule',
             'Unregister-OpsModule', 'Update-OpsRegistry'
         )
