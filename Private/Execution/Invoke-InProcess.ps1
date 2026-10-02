@@ -90,7 +90,9 @@ function ConvertFrom-ProcessResponse {
     )
 
     $output = @($Response.output | Where-Object { $_ } | ForEach-Object {
-        [PSCustomObject]@{ stream = $_.stream; message = $_.message }
+        $line = [PSCustomObject]@{ stream = $_.stream; message = $_.message }
+        if ($_.data) { $line | Add-Member -NotePropertyName data -NotePropertyValue $_.data }
+        $line
     })
 
     $duration = if ($Response.durationMs) { [int]$Response.durationMs } else { $DurationMs }

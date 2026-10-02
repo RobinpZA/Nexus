@@ -52,7 +52,7 @@ Describe 'Module Metadata' {
         $meta.Name | Should -Be 'FixtureModule'
         $meta.Version | Should -Be '1.0.0'
         $meta.Commands | Should -Contain 'Get-FixtureValue'
-        @($meta.Commands).Count | Should -Be 3
+        @($meta.Commands).Count | Should -Be 5
     }
 
     It 'Caches a parsed manifest and discards a stale entry' {

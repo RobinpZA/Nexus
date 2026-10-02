@@ -154,8 +154,11 @@ function Get-RunspaceInvokeScript {
     [CmdletBinding()]
     param()
 
-    return @'
-param($CommandName, $Params, $ModuleName)
+    # The binder is this module's own function text, not request data, so embedding
+    # it keeps the one-binder rule without widening what the script trusts.
+    $binder = "function ConvertTo-BoundParameter {`n$(${function:ConvertTo-BoundParameter})`n}"
+
+    return 'param($CommandName, $Params, $ModuleName)' + "`n`n" + $binder + "`n" + @'
 
 # Get-Command treats -Module $null/'' as "no filter", not "match nothing" — an absent
 # ModuleName would silently reopen the exact hole this scoping exists to close.
@@ -164,22 +167,7 @@ if ([string]::IsNullOrWhiteSpace($ModuleName)) { throw 'Internal error: no modul
 $cmd = Get-Command -Name $CommandName -Module $ModuleName -ErrorAction SilentlyContinue
 if (-not $cmd) { throw "Command '$CommandName' is not exported by module '$ModuleName'." }
 
-$bound = @{}
-foreach ($key in $Params.Keys) {
-    $meta = $cmd.Parameters[$key]
-    if (-not $meta) { throw "Parameter '$key' is not valid for command '$CommandName'." }
-
-    $value = $Params[$key]
-    $type  = $meta.ParameterType
-
-    if ($type -eq [switch] -or $type -eq [bool]) {
-        $bound[$key] = ($value -is [bool] -and $value) -or ("$value".Trim().ToLower() -in @('true', '1', 'yes', 'on'))
-    } elseif ($type -eq [string[]] -and $value -is [string]) {
-        $bound[$key] = @($value -split ',\s*')
-    } else {
-        $bound[$key] = $value
-    }
-}
+$bound = ConvertTo-BoundParameter -Command $cmd -Parameters $Params
 
 & $cmd @bound *>&1
 '@

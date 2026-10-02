@@ -64,6 +64,7 @@ const App = {
                 case 'scan': this.scanRegistry(); return;
                 case 'shutdown': this.shutdown(); return;
                 case 'copy-output': Components.copyOutput(); return;
+                case 'export-csv': Components.exportCsv(); return;
                 case 'toggle-category': { const c=action.closest('.cmd-category'); if(c) c.classList.toggle('collapsed'); return; }
             }
         }

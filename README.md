@@ -137,6 +137,8 @@ Nexus runs module commands in isolated execution contexts so modules can keep th
 - Modules that depend on conflicting ecosystems such as Microsoft Graph, Exchange Online, or Teams are automatically moved to process isolation.
 - Async commands return immediately with a job id, and the portal polls job status until the result is ready.
 - Only one async command can run at a time for a given module runspace to avoid pipeline collisions.
+- Every path (session, runspace, process) binds parameters through one function, `ConvertTo-BoundParameter`: `"false"` is false for `[bool]`/`[switch]`, comma-separated text splits for array parameters, and blank fields are skipped.
+- Commands that return objects show as a table in the portal, with CSV export. Each output line carries `data`, a flat property map, beside its `message` text.
 
 You can inspect async job progress through the portal API:
 
