@@ -215,4 +215,4 @@ Tests/    Pester test suite
 
 ## Author
 
-Robin Pieterse (Turrito Networks)
+Robin Pieterse

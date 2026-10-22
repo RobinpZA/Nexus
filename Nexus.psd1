@@ -3,7 +3,7 @@
     ModuleVersion     = '1.3.0'
     GUID              = '86147d2b-ae69-4971-8b44-06af60f8418b'
     Author            = 'Robin Pieterse'
-    CompanyName       = 'Turrito Networks'
+    CompanyName       = 'Robin Pieterse'
     Description       = 'Central PowerShell module hub with embedded web portal for discovering, managing, and running custom modules.'
     PowerShellVersion = '7.2'
 
