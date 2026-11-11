@@ -392,7 +392,7 @@ Describe 'Execution: Process Worker Launch' {
 
             try {
                 $entry = @{
-                    name = 'SpacedModule'
+                    name = 'Spaced Module'
                     path = Join-Path ([System.IO.Path]::GetTempPath()) 'Spaced Module' 'Spaced Module.psd1'
                 }
                 $null = New-ProcessContext -ModuleEntry ([PSCustomObject]$entry)
@@ -401,11 +401,11 @@ Describe 'Execution: Process Worker Launch' {
                     Arguments  = $script:CapturedLaunch
                     WorkerPath = Join-Path $script:NexusRoot 'Workers' 'ProcessWorker.ps1'
                     ModulePath = $entry.path
-                    CommsDir   = Join-Path $script:LogDir 'process_SpacedModule'
+                    CommsDir   = Join-Path $script:LogDir 'process_Spaced_Module'
                 }
             } finally {
                 Remove-Item $script:LogDir -Recurse -Force -ErrorAction SilentlyContinue
-                $script:ModuleRunspaces.Remove('SpacedModule')
+                $script:ModuleRunspaces.Remove('Spaced Module')
                 $script:LogDir = $originalLogDir
                 Remove-Item Function:\Start-Process -ErrorAction SilentlyContinue
             }
@@ -636,9 +636,10 @@ Describe 'Execution: Process Response Correlation' {
             $proc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 60' -PassThru -WindowStyle Hidden
             $ctx = @{ Name = 'TimeoutCtx'; Process = $proc; CommsDir = $null; ActiveAsyncJobId = 'j1' }
             $script:ModuleRunspaces = @{ TimeoutCtx = $ctx }
+            $procId = $proc.Id
             Remove-ModuleContext -Context $ctx
             [PSCustomObject]@{
-                Exited   = $proc.HasExited
+                Exited   = -not (Get-Process -Id $procId -ErrorAction SilentlyContinue)
                 Removed  = -not $script:ModuleRunspaces.ContainsKey('TimeoutCtx')
                 Released = ($null -eq $ctx.ActiveAsyncJobId)
             }

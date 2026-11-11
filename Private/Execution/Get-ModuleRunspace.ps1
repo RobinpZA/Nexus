@@ -19,7 +19,8 @@
             return $existing
         }
         try {
-            if ($existing.Process -and -not $existing.Process.HasExited) { $existing.Process.Kill() }
+            if ($existing.Process -and -not $existing.Process.HasExited) { $existing.Process.Kill($true) }
+            if ($existing.Process -is [System.IDisposable]) { $existing.Process.Dispose() }
             if ($existing.Runspace) { $existing.Runspace.Dispose() }
             if ($existing.CommsDir -and (Test-Path $existing.CommsDir)) { Remove-Item $existing.CommsDir -Recurse -Force -ErrorAction SilentlyContinue }
         } catch {
@@ -78,6 +79,7 @@ function Remove-ModuleContext {
             $Context.Process.Kill($true)
             $null = $Context.Process.WaitForExit(3000)
         }
+        if ($Context.Process -is [System.IDisposable]) { $Context.Process.Dispose() }
     } catch {
         Write-HubLog -Level Debug -Message "Failed to kill process for $($Context.Name) : $($_.Exception.Message)"
     }
@@ -255,22 +257,45 @@ function New-RunspaceContext {
 function New-ProcessContext {
     param([object]$ModuleEntry)
     $name = $ModuleEntry.name
+    $scopeName = Get-ModuleScopeName -ModuleEntry $ModuleEntry
+
+    # These values go onto a pwsh command line wrapped in double quotes. Spaces are fine inside
+    # the quotes; a double quote would end the argument early, a backslash can escape the
+    # closing quote, and control characters have no place in a module name.
+    foreach ($check in @(@{ Label = 'module name'; Value = $name }, @{ Label = 'module scope name'; Value = $scopeName })) {
+        if ([string]::IsNullOrWhiteSpace($check.Value) -or $check.Value -match '["\\\p{Cc}]') {
+            throw "Invalid $($check.Label) '$($check.Value)': double quotes, backslashes and control characters are not allowed for process isolation."
+        }
+    }
+
     Write-HubLog -Level Info -Message "Creating PROCESS for: $name (full DLL isolation)"
 
     $commsDir = Join-Path $script:LogDir "process_$($name -replace '[^a-zA-Z0-9_-]','_')"
     if (Test-Path $commsDir) { Remove-Item $commsDir -Recurse -Force }
     New-Item $commsDir -ItemType Directory -Force | Out-Null
 
+    # The channel carries commands and their output: limit it to the current user and SYSTEM.
+    try {
+        $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($true, $false)
+        $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+        $none = [System.Security.AccessControl.PropagationFlags]::None
+        $allow = [System.Security.AccessControl.AccessControlType]::Allow
+        $full = [System.Security.AccessControl.FileSystemRights]::FullControl
+        $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        $systemSid = [System.Security.Principal.SecurityIdentifier]::new([System.Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+        foreach ($sid in @($userSid, $systemSid)) {
+            $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, $full, $inherit, $none, $allow))
+        }
+        Set-Acl -LiteralPath $commsDir -AclObject $acl
+    } catch {
+        Write-HubLog -Level Warning -Message "Could not restrict access to $commsDir : $($_.Exception.Message)"
+    }
+
     $commandFile  = Join-Path $commsDir 'command.json'
     $responseFile = Join-Path $commsDir 'response.json'
     $readyFile    = Join-Path $commsDir 'ready'
     $exitFile     = Join-Path $commsDir 'exit'
-
-    # Reflection scripts live on disk so the worker protocol stays a fixed set of modes
-    # instead of "run this script text".
-    Get-CommandMetadataScript | Out-File (Join-Path $commsDir 'meta.ps1') -Encoding utf8 -Force
-    Get-CommandSynopsisScript | Out-File (Join-Path $commsDir 'synopsis.ps1') -Encoding utf8 -Force
-    Get-ConnectionStateScript | Out-File (Join-Path $commsDir 'connection.ps1') -Encoding utf8 -Force
 
     # SECURITY: The worker is a fixed file shipped with the module (Workers/ProcessWorker.ps1),
     # not generated text written per module then launched with -ExecutionPolicy Bypass. The
@@ -290,11 +315,12 @@ function New-ProcessContext {
     $pwshPath = (Get-Process -Id $PID).Path
     $proc = Start-Process -FilePath $pwshPath `
         -ArgumentList @(
-            '-NoProfile', '-NoLogo', '-ExecutionPolicy', 'Bypass',
+            '-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
             '-File', "`"$workerPath`"",
             '-ModulePath', "`"$($ModuleEntry.path)`"",
             '-ModuleName', "`"$name`"",
-            '-ModuleScope', "`"$(Get-ModuleScopeName -ModuleEntry $ModuleEntry)`"",
+            '-ModuleScope', "`"$scopeName`"",
+            '-ParentPid', "$PID",
             '-CommsDir', "`"$commsDir`""
         ) `
         -WindowStyle Minimized `
@@ -315,7 +341,7 @@ function New-ProcessContext {
             if ($readyContent -eq 'ready') { $ready = $true; break }
             else {
                 Write-HubLog -Level Error -Message "Process import failed for $name : $readyContent"
-                try { $proc.Kill() } catch { Write-HubLog -Level Debug -Message "Failed to terminate process for $name : $($_.Exception.Message)" }
+                try { $proc.Kill($true) } catch { Write-HubLog -Level Debug -Message "Failed to terminate process for $name : $($_.Exception.Message)" }
                 return $null
             }
         }
@@ -325,7 +351,7 @@ function New-ProcessContext {
     # Without this a worker still importing after 60 s was registered as ready anyway.
     if (-not $ready) {
         Write-HubLog -Level Error -Message "Process for $name did not become ready within 60 s"
-        try { $proc.Kill() } catch { Write-HubLog -Level Debug -Message "Failed to terminate process for $name : $($_.Exception.Message)" }
+        try { $proc.Kill($true) } catch { Write-HubLog -Level Debug -Message "Failed to terminate process for $name : $($_.Exception.Message)" }
         return $null
     }
 

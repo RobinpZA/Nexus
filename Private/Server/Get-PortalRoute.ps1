@@ -17,7 +17,11 @@ function Get-PortalRoute {
     [CmdletBinding()]
     param()
 
-    return @(
+    # Handlers are stateless scriptblocks (per-request data arrives via their argument), so the
+    # table is built once per module load instead of once per request.
+    if ($script:PortalRoutes) { return $script:PortalRoutes }
+
+    $script:PortalRoutes = @(
         # ── Static files ──
         @{ Pattern = '^/$'; Methods = @('GET')
            Handler = { param($R) Write-StaticFile -Context $R.Context -FilePath 'index.html' } }
@@ -82,4 +86,5 @@ function Get-PortalRoute {
         @{ Pattern = '^/api/shutdown$'; Methods = @('POST')
            Handler = { param($R) Invoke-PortalShutdown -Context $R.Context } }
     )
+    return $script:PortalRoutes
 }

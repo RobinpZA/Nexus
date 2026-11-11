@@ -9,7 +9,9 @@
     Logs\process_<name>\worker.ps1, then launched with -ExecutionPolicy Bypass — a
     write-then-execute gap in a directory that isn't necessarily as tightly protected as
     the module's own install location. Running this fixed, shipped file instead closes
-    that window; nothing writes PowerShell source into the comms directory anymore.
+    that window; nothing writes PowerShell source into the comms directory anymore. The
+    reflection scripts (metadata, synopsis, connection state) are generated in memory from
+    the shipped generator functions and never touch disk.
 .PARAMETER ModulePath
     Path to the target module's manifest (.psd1).
 .PARAMETER ModuleName
@@ -18,15 +20,17 @@
     The name the imported module is loaded under (its manifest base name) — used to scope
     Get-Command. Can differ from ModuleName.
 .PARAMETER CommsDir
-    Directory holding the command/response files and the reflection scripts
-    (meta.ps1/synopsis.ps1/connection.ps1) that New-ProcessContext writes alongside it.
+    Directory holding the command/response channel files.
+.PARAMETER ParentPid
+    Process id of the Nexus hub. The worker exits when that process is gone.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ModulePath,
     [Parameter(Mandatory)][string]$ModuleName,
     [Parameter(Mandatory)][string]$ModuleScope,
-    [Parameter(Mandatory)][string]$CommsDir
+    [Parameter(Mandatory)][string]$CommsDir,
+    [int]$ParentPid = 0
 )
 
 $Host.UI.RawUI.WindowTitle = "Nexus: $ModuleName"
@@ -36,13 +40,13 @@ $commandFile      = Join-Path $CommsDir 'command.json'
 $responseFile     = Join-Path $CommsDir 'response.json'
 $readyFile        = Join-Path $CommsDir 'ready'
 $exitFile         = Join-Path $CommsDir 'exit'
-$metaScript       = Join-Path $CommsDir 'meta.ps1'
-$synopsisScript   = Join-Path $CommsDir 'synopsis.ps1'
-$connectionScript = Join-Path $CommsDir 'connection.ps1'
 
 # The parameter binder and output shaping shared with the runspace and in-session paths.
 . (Join-Path $PSScriptRoot '..' 'Private' 'Execution' 'ConvertTo-BoundParameter.ps1')
 . (Join-Path $PSScriptRoot '..' 'Private' 'Execution' 'ConvertTo-HubOutput.ps1')
+# Generators for the reflection scripts; each returns script text that is run in memory.
+. (Join-Path $PSScriptRoot '..' 'Private' 'Execution' 'Get-CommandMetadataScript.ps1')
+. (Join-Path $PSScriptRoot '..' 'Private' 'Execution' 'Get-ConnectionStateScript.ps1')
 
 # Same logic as Private/Helpers/Write-AtomicFile.ps1 — this script runs outside the
 # module, so it carries its own copy. The host polls response.json every 200 ms and
@@ -78,7 +82,23 @@ try {
 Write-Host "Waiting for commands..." -ForegroundColor DarkGray
 Write-Host ""
 
+$parentCheck = [System.Diagnostics.Stopwatch]::StartNew()
+# Record the hub's start time now, while it is certainly alive, so a later process that
+# reuses the same PID is not mistaken for it.
+$parentStart = $null
+if ($ParentPid -gt 0) {
+    try { $parentStart = (Get-Process -Id $ParentPid -ErrorAction Stop).StartTime } catch { $parentStart = $null }
+}
 while (-not (Test-Path $exitFile)) {
+    # Exit when the hub dies so an orphaned worker does not poll forever.
+    if ($ParentPid -gt 0 -and $parentCheck.ElapsedMilliseconds -ge 2000) {
+        $parentCheck.Restart()
+        $parent = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
+        if (-not $parent -or ($parentStart -and $parent.StartTime -ne $parentStart)) {
+            Write-Host 'Parent process is gone.' -ForegroundColor DarkGray
+            break
+        }
+    }
     if (Test-Path $commandFile) {
         $requestId = $null
         try {
@@ -92,12 +112,12 @@ while (-not (Test-Path $exitFile)) {
             if ($req.mode -in @('params', 'synopsis', 'connection')) {
                 Write-Host "? metadata ($($req.mode))" -ForegroundColor DarkGray
                 try {
-                    $script = switch ($req.mode) {
-                        'params'     { $metaScript }
-                        'synopsis'   { $synopsisScript }
-                        'connection' { $connectionScript }
+                    $scriptText = switch ($req.mode) {
+                        'params'     { Get-CommandMetadataScript }
+                        'synopsis'   { Get-CommandSynopsisScript }
+                        'connection' { Get-ConnectionStateScript }
                     }
-                    $meta = & $script $cmd
+                    $meta = & ([scriptblock]::Create($scriptText)) $cmd
                     Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$true; metadata=$meta; durationMs=0} | ConvertTo-Json -Depth 8 -Compress)
                 } catch {
                     Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$false; output=@(@{stream='Error'; message=$_.Exception.Message}); durationMs=0} | ConvertTo-Json -Depth 5 -Compress)
