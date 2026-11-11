@@ -1,6 +1,6 @@
 @{
     RootModule        = 'Nexus.psm1'
-    ModuleVersion     = '1.4.0'
+    ModuleVersion     = '1.5.0'
     GUID              = '86147d2b-ae69-4971-8b44-06af60f8418b'
     Author            = 'Robin Pieterse'
     CompanyName       = 'Robin Pieterse'
@@ -20,6 +20,8 @@
         'Unregister-OpsModule'
         'Update-OpsRegistry'
     )
+
+    FormatsToProcess  = @('Nexus.Format.ps1xml')
 
     CmdletsToExport   = @()
     VariablesToExport  = @()

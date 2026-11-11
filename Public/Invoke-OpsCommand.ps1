@@ -2,6 +2,11 @@ function Invoke-OpsCommand {
     <#
     .SYNOPSIS
         Runs a command from a registered module. Handles import, parameter binding, and output capture.
+    .DESCRIPTION
+        Runs the command through the Nexus execution layer (runspace, process or in-process,
+        depending on the module), prints each captured output line coloured by stream plus a
+        completion line, and returns the result object (success, durationMs, output).
+        Writes an error and returns nothing when the module is not registered or is disabled.
     .PARAMETER Module
         The registered module name.
     .PARAMETER Command

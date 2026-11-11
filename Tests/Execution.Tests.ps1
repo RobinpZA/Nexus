@@ -356,8 +356,21 @@ Describe 'Execution: Background Job Sweep' {
     }
 
     It 'Invoke-RequestRouter calls Sync-BackgroundJob on every request' {
-        $funcDef = & (Get-Module Nexus) { (Get-Command 'Invoke-RequestRouterCore').ScriptBlock.ToString() }
-        $funcDef | Should -Match 'Sync-BackgroundJob'
+        Mock Sync-BackgroundJob { } -ModuleName Nexus
+        $listener = [System.Net.HttpListener]::new()
+        $port = & { $p = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0); $p.Start(); $n = $p.LocalEndpoint.Port; $p.Stop(); $n }
+        $listener.Prefixes.Add("http://127.0.0.1:$port/")
+        $listener.Start()
+        $client = [System.Net.Http.HttpClient]::new()
+        try {
+            # Unauthenticated health check: exercises the router without touching any module.
+            $task = $client.GetAsync("http://127.0.0.1:$port/api/health")
+            $ctx = $listener.GetContextAsync().GetAwaiter().GetResult()
+            & (Get-Module Nexus) { param($c) Invoke-RequestRouter -Context $c } $ctx
+            $null = $task.GetAwaiter().GetResult()
+        } finally { $client.Dispose(); $listener.Close() }
+
+        Should -Invoke Sync-BackgroundJob -ModuleName Nexus -Times 1 -Exactly
     }
 }
 
