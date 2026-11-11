@@ -118,6 +118,8 @@
             command    = $outcome.command
             durationMs = $outcome.durationMs
             output     = @($outcome.output)
+            truncated  = [bool]$outcome.truncated
+            totalCount = if ($null -ne $outcome.totalCount) { [int]$outcome.totalCount } else { @($outcome.output).Count }
         }
     }
 }

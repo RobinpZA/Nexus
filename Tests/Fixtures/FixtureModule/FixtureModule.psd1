@@ -6,7 +6,7 @@
     CompanyName       = 'Robin Pieterse'
     Description       = 'Test fixture module for the Nexus suite.'
     PowerShellVersion = '7.2'
-    FunctionsToExport = @('Get-FixtureValue', 'Get-FixtureContext', 'Write-FixtureFailure', 'Get-FixtureObject', 'Join-FixtureList')
+    FunctionsToExport = @('Get-FixtureValue', 'Get-FixtureContext', 'Write-FixtureFailure', 'Get-FixtureObject', 'Join-FixtureList', 'Get-FixtureThenThrow', 'Get-FixtureRows', 'Get-FixtureZero', 'Wait-FixtureSlow', 'Wait-FixtureBlocking')
     CmdletsToExport   = @()
     AliasesToExport   = @()
 }

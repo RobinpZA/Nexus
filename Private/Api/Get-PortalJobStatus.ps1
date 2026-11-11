@@ -30,6 +30,8 @@
         $data['success']    = $jobInfo.result.success
         $data['durationMs'] = $jobInfo.result.durationMs
         $data['output']     = @($jobInfo.result.output)
+        $data['truncated']  = [bool]$jobInfo.result.truncated
+        $data['totalCount'] = if ($null -ne $jobInfo.result.totalCount) { [int]$jobInfo.result.totalCount } else { @($jobInfo.result.output).Count }
         Update-RecentCommandResult -JobId $JobId -Success $jobInfo.result.success
     }
 

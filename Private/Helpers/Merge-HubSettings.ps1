@@ -43,6 +43,7 @@ function Merge-HubSettings {
         publishedModulePaths = 'pathArray'
         theme                = 'theme'
         maxRecentCommands    = 'count'
+        maxOutputRows        = 'rows'
     }
 
     # Deep clone so a validation failure part-way through leaves the caller's object untouched.
@@ -65,6 +66,7 @@ function Merge-HubSettings {
             'retention'   { ConvertTo-HubInteger -Value $value -Key $key -Minimum 0 -Maximum 3650 }
             'depth'       { ConvertTo-HubInteger -Value $value -Key $key -Minimum 0 -Maximum 10 }
             'count'       { ConvertTo-HubInteger -Value $value -Key $key -Minimum 1 -Maximum 1000 }
+            'rows'        { ConvertTo-HubInteger -Value $value -Key $key -Minimum 1 -Maximum 100000 }
             'stringArray' { @(@($value) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ }) }
             'pathArray'   {
                 $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)

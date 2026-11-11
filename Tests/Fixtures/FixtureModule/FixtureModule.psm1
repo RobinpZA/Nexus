@@ -67,3 +67,65 @@ function Join-FixtureList {
 
     "items=$($Items -join '|');numbers=$(($Numbers | Measure-Object -Sum).Sum);flag=$Flag;top=$($Top + 1)"
 }
+
+function Get-FixtureThenThrow {
+    <#
+    .SYNOPSIS
+        Emits three records, then raises a terminating error.
+    #>
+    [CmdletBinding()]
+    param()
+
+    'one'
+    'two'
+    'three'
+    throw 'fixture boom'
+}
+
+function Get-FixtureRows {
+    <#
+    .SYNOPSIS
+        Emits Count structured records, for exercising the output cap.
+    #>
+    [CmdletBinding()]
+    param([int]$Count = 5)
+
+    foreach ($i in 1..$Count) { [PSCustomObject]@{ Index = $i } }
+}
+
+function Get-FixtureZero {
+    <#
+    .SYNOPSIS
+        Emits a single 0, which is falsy.
+    #>
+    [CmdletBinding()]
+    param()
+
+    0
+}
+
+function Wait-FixtureSlow {
+    <#
+    .SYNOPSIS
+        Emits one record, then sleeps (interruptible), for exercising cancellation.
+    #>
+    [CmdletBinding()]
+    param([int]$Seconds = 30)
+
+    'working'
+    Start-Sleep -Seconds $Seconds
+    'finished'
+}
+
+function Wait-FixtureBlocking {
+    <#
+    .SYNOPSIS
+        Emits one record, then blocks in a .NET call that a stop request cannot interrupt.
+    #>
+    [CmdletBinding()]
+    param([int]$Seconds = 12)
+
+    'working'
+    [System.Threading.Thread]::Sleep($Seconds * 1000)
+    'finished'
+}

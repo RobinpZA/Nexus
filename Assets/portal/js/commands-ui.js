@@ -58,20 +58,20 @@ const CommandsUI = {
             const cmdRows = cat.commands.map(cmd => {
                 const desc = (cmd.description || (descriptions && descriptions[cmd.name])) || '';
                 const descHtml = desc ? `<span class="cmd-desc">${Components.esc(desc)}</span>` : '';
-                return `<div class="cmd-row" data-nav="${Components.navTarget('commands', moduleName, cmd.name)}">
+                return `<a class="cmd-row" href="${Components.navTarget('commands', moduleName, cmd.name)}">
                     <span class="cmd-name-cat">${Components.esc(cmd.name)}</span>
                     ${descHtml}
-                </div>`;
+                </a>`;
             }).join('');
 
             html += `
             <div class="cmd-category ${isCollapsed}">
-                <div class="cmd-category-header" data-action="toggle-category">
-                    <span class="cmd-category-icon">${cat.icon || '📦'}</span>
+                <button type="button" class="cmd-category-header" data-action="toggle-category" aria-expanded="${isCollapsed ? 'false' : 'true'}">
+                    <span class="cmd-category-icon" aria-hidden="true">${Components.esc(cat.icon || '📦')}</span>
                     <span class="cmd-category-label">${Components.esc(cat.label)}</span>
-                    <span class="cmd-category-count">${cat.count}</span>
-                    <span class="cmd-category-chevron">▾</span>
-                </div>
+                    <span class="cmd-category-count">${Components.esc(cat.count)}</span>
+                    <span class="cmd-category-chevron" aria-hidden="true">▾</span>
+                </button>
                 <div class="cmd-category-desc">${Components.esc(cat.description || '')}</div>
                 <div class="cmd-category-body">${cmdRows}</div>
             </div>`;
@@ -94,7 +94,7 @@ const CommandsUI = {
         try {
             const data = await API.getModuleCommands(moduleName + '?describe=true');
             // Re-render the module detail with descriptions
-            Components.toast(`Loaded ${data.commands.filter(c => c.description).length} descriptions`, 'success');
+            Components.toast(`Loaded ${(data.commands || []).filter(c => c.description).length} descriptions`, 'success');
             // Trigger a re-render
             App.renderModuleDetail(document.getElementById('content'), moduleName, data);
         } catch(e) {

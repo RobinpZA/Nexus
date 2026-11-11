@@ -258,7 +258,7 @@ Describe 'Execution: Runspace Job Timeout' {
     # jobs previously had no equivalent, so a hung command held its context's
     # ActiveAsyncJobId forever.
 
-    It 'Fails a hung job once it passes its TimeoutAt, freeing the context' {
+    It 'Fails a hung job once it passes its TimeoutAt, freeing the context once the stop is reaped' {
         $result = & (Get-Module Nexus) {
             $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
             $runspace.Open()
@@ -275,17 +275,22 @@ Describe 'Execution: Runspace Job Timeout' {
             }
 
             Complete-RunspaceJob -Job $job
+            $busyAfterTimeout = ($context.ActiveAsyncJobId -eq 'job1')
+            $deadline = (Get-Date).AddSeconds(15)
+            while (-not $job.StopReaped -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50; Complete-PendingStop -Job $job }
             $runspace.Dispose()
 
             [PSCustomObject]@{
                 Status         = $job.Status
                 Message        = $job.Result.output[0].message
+                BusyAfterTimeout = $busyAfterTimeout
                 ContextCleared = ($null -eq $context.ActiveAsyncJobId)
             }
         }
 
         $result.Status | Should -Be 'failed'
         $result.Message | Should -Be 'Command timed out'
+        $result.BusyAfterTimeout | Should -BeTrue
         $result.ContextCleared | Should -BeTrue
     }
 

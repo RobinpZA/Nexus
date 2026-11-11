@@ -118,9 +118,12 @@ function ConvertFrom-ProcessResponse {
 
     $duration = if ($Response.durationMs) { [int]$Response.durationMs } else { $DurationMs }
 
+    $totalCount = if ($null -ne $Response.totalCount) { [int]$Response.totalCount } else { $output.Count }
+
     return [PSCustomObject]@{
         success = [bool]$Response.success; module = $ModuleName; command = $CommandName
         durationMs = $duration; output = $output
+        truncated = [bool]$Response.truncated; totalCount = $totalCount
     }
 }
 
@@ -185,7 +188,7 @@ function Start-ProcessAsync {
 
     $requestId = [guid]::NewGuid().ToString('N')
     $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -RequestId $requestId -Request @{
-        command = $CommandName; parameters = $Parameters
+        command = $CommandName; parameters = $Parameters; maxRows = (Get-MaxOutputRow)
     }
     if (-not $ProcessEntry) {
         return [PSCustomObject]@{
@@ -243,7 +246,7 @@ function Invoke-InProcess {
 
     $requestId = [guid]::NewGuid().ToString('N')
     $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -RequestId $requestId -Request @{
-        command = $CommandName; parameters = $Parameters
+        command = $CommandName; parameters = $Parameters; maxRows = (Get-MaxOutputRow)
     }
     if (-not $ProcessEntry) {
         return [PSCustomObject]@{

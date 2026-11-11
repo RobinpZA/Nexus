@@ -321,7 +321,8 @@ Describe 'Security: Runspace Parameter Binding' {
             } finally { $ps.Dispose() }
         }
 
-        $result | Should -Be (Get-Date -Format 'yyyy')
+        # The script returns shaped hub output records, not raw objects.
+        $result.message | Should -Be (Get-Date -Format 'yyyy')
     }
 
     It 'Does not build the command line by string concatenation' {

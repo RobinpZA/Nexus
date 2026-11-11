@@ -140,24 +140,30 @@ while (-not (Test-Path $exitFile)) {
             $boundParams = ConvertTo-BoundParameter -Command $cmdInfo -Parameters $params
 
             $output = [System.Collections.Generic.List[object]]::new()
+            $maxRows = if ($req.maxRows) { [int]$req.maxRows } else { 0 }
+            $summary = @{ Total = 0; Kept = 0; Truncated = $false }
+            $show = {
+                param($line)
+                $output.Add($line)
+                $color = switch ($line.stream) { 'Error' {'Red'} 'Warning' {'Yellow'} 'Information' {'Cyan'} default {'White'} }
+                Write-Host "  [$($line.stream)] $($line.message)" -ForegroundColor $color
+            }
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
-                $result = & $cmdInfo @boundParams *>&1
-                foreach ($line in (ConvertTo-HubOutput -Records @($result))) {
-                    $output.Add($line)
-                    $color = switch ($line.stream) { 'Error' {'Red'} 'Warning' {'Yellow'} 'Information' {'Cyan'} default {'White'} }
-                    Write-Host "  [$($line.stream)] $($line.message)" -ForegroundColor $color
+                # Records are shaped as they are produced, so everything emitted before a
+                # terminating error is kept and returned with it.
+                & $cmdInfo @boundParams *>&1 | ForEach-Object {
+                    foreach ($line in (ConvertTo-HubOutput -Records (, $_) -MaxRows $maxRows -Summary $summary)) { & $show $line }
                 }
-                $ok = -not ($output | Where-Object { $_.stream -eq 'Error' })
                 Write-Host "  Done ($([math]::Round($sw.Elapsed.TotalMilliseconds))ms)" -ForegroundColor Green
             } catch {
-                $output.Add(@{stream='Error'; message=$_.Exception.Message})
+                foreach ($line in (ConvertTo-HubOutput -Records (, $_))) { & $show $line }
                 Write-Host "  ERROR: $($_.Exception.Message)" -ForegroundColor Red
-                $ok = $false
             }
+            $ok = -not ($output | Where-Object { $_.stream -eq 'Error' })
             $sw.Stop()
 
-            Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$ok; output=$output; durationMs=[math]::Round($sw.Elapsed.TotalMilliseconds)} | ConvertTo-Json -Depth 5 -Compress)
+            Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$ok; output=$output; truncated=$summary.Truncated; totalCount=$summary.Total; durationMs=[math]::Round($sw.Elapsed.TotalMilliseconds)} | ConvertTo-Json -Depth 5 -Compress)
         } catch {
             Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$false; output=@(@{stream='Error'; message=$_.Exception.Message}); durationMs=0} | ConvertTo-Json -Depth 5 -Compress)
         }

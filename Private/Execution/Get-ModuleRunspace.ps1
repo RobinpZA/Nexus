@@ -60,28 +60,47 @@ function Remove-ModuleContext {
     .SYNOPSIS
         Discards a module context: kills its worker process tree and removes its comms folder.
     .DESCRIPTION
-        Used when a process worker stops answering. The worker keeps running and would
-        write a late response, so the whole context is dropped and the next call builds
-        a fresh one. Releases the context's busy flag.
+        Used when a process worker stops answering, or a job is cancelled. The worker
+        keeps running and would write a late response, so the whole context is dropped
+        and the next call builds a fresh one. Releases the context's busy flag.
+
+        The process is killed without a long wait for it to exit (a blocking wait would
+        stall the listener thread).
+
+        A runspace context is closed with CloseAsync (non-blocking): a pipeline stuck in
+        a call PowerShell cannot interrupt would make a synchronous Dispose hang the
+        listener thread.
     .PARAMETER Context
         The context entry to discard.
+    .PARAMETER JobId
+        The job being reaped. When given, the busy marker (ActiveAsyncJobId) is only
+        cleared if it still names this job, so a newer job's marker is never wiped.
+        Without it the marker is always cleared.
     .EXAMPLE
         Remove-ModuleContext -Context $ctx
     #>
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][object]$Context)
+    param(
+        [Parameter(Mandatory)][object]$Context,
+        [string]$JobId
+    )
 
     if (-not $PSCmdlet.ShouldProcess($Context.Name, 'Discard module context')) { return }
 
-    $Context.ActiveAsyncJobId = $null
+    if (-not $JobId -or $Context.ActiveAsyncJobId -eq $JobId) { $Context.ActiveAsyncJobId = $null }
     try {
         if ($Context.Process -and -not $Context.Process.HasExited) {
             $Context.Process.Kill($true)
-            $null = $Context.Process.WaitForExit(3000)
+            $null = $Context.Process.WaitForExit(200)
         }
         if ($Context.Process -is [System.IDisposable]) { $Context.Process.Dispose() }
     } catch {
         Write-HubLog -Level Debug -Message "Failed to kill process for $($Context.Name) : $($_.Exception.Message)"
+    }
+    if ($Context.Runspace) {
+        try { $Context.Runspace.CloseAsync() } catch {
+            Write-HubLog -Level Debug -Message "Failed to close runspace for $($Context.Name) : $($_.Exception.Message)"
+        }
     }
     if ($Context.CommsDir -and (Test-Path $Context.CommsDir)) {
         Remove-Item $Context.CommsDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -90,6 +109,27 @@ function Remove-ModuleContext {
         [object]::ReferenceEquals($script:ModuleRunspaces[$Context.Name], $Context)) {
         $script:ModuleRunspaces.Remove($Context.Name)
     }
+}
+
+function Get-ModuleFileKey {
+    <#
+    .SYNOPSIS
+        Returns a cache key for a module that changes when its manifest or script file is edited.
+    .DESCRIPTION
+        Built from the module name, path and the last-write ticks of the .psd1 and the
+        matching .psm1, so a cached value is dropped naturally when either file changes.
+    .PARAMETER ModuleEntry
+        The registry entry for the module.
+    .EXAMPLE
+        $key = Get-ModuleFileKey -ModuleEntry $mod
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$ModuleEntry)
+
+    $psm1Path = $ModuleEntry.path -replace '\.psd1$', '.psm1'
+    $psd1Ticks = if (Test-Path -LiteralPath $ModuleEntry.path) { (Get-Item -LiteralPath $ModuleEntry.path).LastWriteTimeUtc.Ticks } else { 0 }
+    $psm1Ticks = if (Test-Path -LiteralPath $psm1Path) { (Get-Item -LiteralPath $psm1Path).LastWriteTimeUtc.Ticks } else { 0 }
+    return "$($ModuleEntry.name)|$($ModuleEntry.path)|$psd1Ticks|$psm1Ticks"
 }
 
 function Get-RequiredIsolationMode {
@@ -109,10 +149,7 @@ function Get-RequiredIsolationMode {
     # The scan reads the manifest, the .psm1 and up to 20 .ps1 files; cache it per
     # module, keyed on cheap stat calls so an edited module is rescanned.
     if (-not $script:IsolationModeCache) { $script:IsolationModeCache = @{} }
-    $psm1Path = $ModuleEntry.path -replace '\.psd1$', '.psm1'
-    $psd1Ticks = if (Test-Path -LiteralPath $ModuleEntry.path) { (Get-Item -LiteralPath $ModuleEntry.path).LastWriteTimeUtc.Ticks } else { 0 }
-    $psm1Ticks = if (Test-Path -LiteralPath $psm1Path) { (Get-Item -LiteralPath $psm1Path).LastWriteTimeUtc.Ticks } else { 0 }
-    $cacheKey = "$($ModuleEntry.name)|$($ModuleEntry.path)|$psd1Ticks|$psm1Ticks"
+    $cacheKey = Get-ModuleFileKey -ModuleEntry $ModuleEntry
     if ($script:IsolationModeCache.ContainsKey($cacheKey)) { return $script:IsolationModeCache[$cacheKey] }
 
     $detected = Resolve-IsolationMode -ModuleEntry $ModuleEntry

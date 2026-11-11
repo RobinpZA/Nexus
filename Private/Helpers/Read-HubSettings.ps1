@@ -30,6 +30,7 @@ function Read-HubSettings {
         favouriteCommands    = @()
         recentCommands       = @()
         maxRecentCommands    = 20
+        maxOutputRows        = 1000
     }
 
     if (-not (Test-Path $script:SettingsFile)) {
