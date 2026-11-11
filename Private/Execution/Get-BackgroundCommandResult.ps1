@@ -168,7 +168,7 @@ function Complete-ProcessJob {
     $context = $Job.Context
     $duration = [math]::Round(((Get-Date) - $Job.StartedAt).TotalMilliseconds, 0)
 
-    $response = Receive-ProcessResponse -ProcessEntry $context
+    $response = Receive-ProcessResponse -ProcessEntry $context -RequestId ([string]$Job.RequestId)
     if ($response) {
         $result = ConvertFrom-ProcessResponse -Response $response -ModuleName $Job.Module -CommandName $Job.Command -DurationMs $duration
         $Job.Result = [PSCustomObject]@{ success = $result.success; output = @($result.output); durationMs = $result.durationMs }
@@ -190,6 +190,9 @@ function Complete-ProcessJob {
         durationMs = $duration
     }
     $Job.Status = 'failed'
+    # A timed-out worker is still running the command and would write a late response;
+    # discard the context (which also releases its busy flag) so the next call starts clean.
+    if ($context -and $failure -like '*timeout*') { Remove-ModuleContext -Context $context }
     Clear-JobContext -Job $Job
     Write-HubLog -Level Error -Message "Background job $($Job.Id) failed: $failure"
 }

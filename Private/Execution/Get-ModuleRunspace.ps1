@@ -7,7 +7,6 @@
 
     if (-not $script:ModuleRunspaces) { $script:ModuleRunspaces = @{} }
     $name = $ModuleEntry.name
-    $mode = Get-RequiredIsolationMode -ModuleEntry $ModuleEntry
 
     if (-not $Force -and $script:ModuleRunspaces.ContainsKey($name)) {
         $existing = $script:ModuleRunspaces[$name]
@@ -29,15 +28,74 @@
         $script:ModuleRunspaces.Remove($name)
     }
 
+    # Only a new context needs the (expensive) isolation decision.
+    $mode = Get-RequiredIsolationMode -ModuleEntry $ModuleEntry
     if ($mode -eq 'process') { return New-ProcessContext -ModuleEntry $ModuleEntry }
     else { return New-RunspaceContext -ModuleEntry $ModuleEntry }
+}
+
+function Get-ModuleScopeName {
+    <#
+    .SYNOPSIS
+        Returns the name the loaded module is known by, for scoping Get-Command.
+    .DESCRIPTION
+        A module loads under its manifest's base name, which can differ from the
+        friendly name chosen at registration.
+    .PARAMETER ModuleEntry
+        The registry entry for the module.
+    .EXAMPLE
+        Get-ModuleScopeName -ModuleEntry $mod
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$ModuleEntry)
+
+    $path = [string]$ModuleEntry.path
+    if ($path -match '\.(psd1|psm1)$') { return [System.IO.Path]::GetFileNameWithoutExtension($path) }
+    return Split-Path $path.TrimEnd('\', '/') -Leaf
+}
+
+function Remove-ModuleContext {
+    <#
+    .SYNOPSIS
+        Discards a module context: kills its worker process tree and removes its comms folder.
+    .DESCRIPTION
+        Used when a process worker stops answering. The worker keeps running and would
+        write a late response, so the whole context is dropped and the next call builds
+        a fresh one. Releases the context's busy flag.
+    .PARAMETER Context
+        The context entry to discard.
+    .EXAMPLE
+        Remove-ModuleContext -Context $ctx
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][object]$Context)
+
+    if (-not $PSCmdlet.ShouldProcess($Context.Name, 'Discard module context')) { return }
+
+    $Context.ActiveAsyncJobId = $null
+    try {
+        if ($Context.Process -and -not $Context.Process.HasExited) {
+            $Context.Process.Kill($true)
+            $null = $Context.Process.WaitForExit(3000)
+        }
+    } catch {
+        Write-HubLog -Level Debug -Message "Failed to kill process for $($Context.Name) : $($_.Exception.Message)"
+    }
+    if ($Context.CommsDir -and (Test-Path $Context.CommsDir)) {
+        Remove-Item $Context.CommsDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($Context.Name -and $script:ModuleRunspaces -and $script:ModuleRunspaces.ContainsKey($Context.Name) -and
+        [object]::ReferenceEquals($script:ModuleRunspaces[$Context.Name], $Context)) {
+        $script:ModuleRunspaces.Remove($Context.Name)
+    }
 }
 
 function Get-RequiredIsolationMode {
     param([object]$ModuleEntry)
 
     # ── 1. Check for explicit override in modules.json ──
-    # Set "isolation": "process" or "isolation": "runspace" per module
+    # Set "isolation": "process" or "isolation": "runspace" per module. Checked before
+    # the cache so changing it takes effect immediately.
     if ($ModuleEntry.PSObject.Properties.Name -contains 'isolation' -and $ModuleEntry.isolation) {
         $override = $ModuleEntry.isolation.ToLower()
         if ($override -in @('process', 'runspace')) {
@@ -45,6 +103,23 @@ function Get-RequiredIsolationMode {
             return $override
         }
     }
+
+    # The scan reads the manifest, the .psm1 and up to 20 .ps1 files; cache it per
+    # module, keyed on cheap stat calls so an edited module is rescanned.
+    if (-not $script:IsolationModeCache) { $script:IsolationModeCache = @{} }
+    $psm1Path = $ModuleEntry.path -replace '\.psd1$', '.psm1'
+    $psd1Ticks = if (Test-Path -LiteralPath $ModuleEntry.path) { (Get-Item -LiteralPath $ModuleEntry.path).LastWriteTimeUtc.Ticks } else { 0 }
+    $psm1Ticks = if (Test-Path -LiteralPath $psm1Path) { (Get-Item -LiteralPath $psm1Path).LastWriteTimeUtc.Ticks } else { 0 }
+    $cacheKey = "$($ModuleEntry.name)|$($ModuleEntry.path)|$psd1Ticks|$psm1Ticks"
+    if ($script:IsolationModeCache.ContainsKey($cacheKey)) { return $script:IsolationModeCache[$cacheKey] }
+
+    $detected = Resolve-IsolationMode -ModuleEntry $ModuleEntry
+    $script:IsolationModeCache[$cacheKey] = $detected
+    return $detected
+}
+
+function Resolve-IsolationMode {
+    param([object]$ModuleEntry)
 
     # ── 2. Check module name against known conflict list ──
     $conflictPrefixes = @(
@@ -148,13 +223,24 @@ function New-RunspaceContext {
 
     $ps = [PowerShell]::Create()
     $ps.Runspace = $runspace
+    $importError = $null
     try {
-        $ps.AddScript("Import-Module '$($ModuleEntry.path -replace "'","''")' -Force -DisableNameChecking") | Out-Null
+        # The path is an argument, never script text — no quoting rules to get wrong.
+        $ps.AddScript('param($p) Import-Module -Name $p -Force -DisableNameChecking -ErrorAction Stop').AddArgument($ModuleEntry.path) | Out-Null
         $null = $ps.Invoke()
+        if ($ps.HadErrors) {
+            $first = @($ps.Streams.Error)[0]
+            $importError = if ($first) { $first.ToString() } else { 'unknown error' }
+        }
     } catch {
-        Write-HubLog -Level Error -Message "Failed to import $name : $($_.Exception.Message)"
-        $runspace.Dispose(); return $null
+        $importError = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
     } finally { $ps.Dispose() }
+
+    if ($importError) {
+        Write-HubLog -Level Error -Message "Failed to import $name : $importError"
+        $runspace.Dispose()
+        throw "Failed to import module '$name': $importError"
+    }
 
     $entry = @{
         Name = $name; Mode = 'runspace'; Runspace = $runspace; Process = $null
@@ -208,6 +294,7 @@ function New-ProcessContext {
             '-File', "`"$workerPath`"",
             '-ModulePath', "`"$($ModuleEntry.path)`"",
             '-ModuleName', "`"$name`"",
+            '-ModuleScope', "`"$(Get-ModuleScopeName -ModuleEntry $ModuleEntry)`"",
             '-CommsDir', "`"$commsDir`""
         ) `
         -WindowStyle Minimized `

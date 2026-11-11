@@ -3,8 +3,10 @@ function Read-HubSettings {
     .SYNOPSIS
         Loads settings.json (or settings.local.json when present).
     .DESCRIPTION
-        Returns the parsed settings object. On a missing or corrupt file a default
-        settings object is returned so the portal keeps serving instead of 500-ing.
+        Returns the parsed settings object with any missing keys filled from the defaults.
+        On a missing or corrupt file a default settings object is returned so the portal
+        keeps serving instead of 500-ing; a corrupt file is first moved to
+        settings.json.corrupt-<timestamp> so a later save cannot destroy it.
     .EXAMPLE
         $settings = Read-HubSettings
     #>
@@ -34,10 +36,25 @@ function Read-HubSettings {
         return $default
     }
 
+    $loaded = $null
     try {
-        return (Get-Content -Path $script:SettingsFile -Raw -Encoding utf8 | ConvertFrom-Json)
+        $loaded = Get-Content -Path $script:SettingsFile -Raw -Encoding utf8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($loaded -isnot [System.Management.Automation.PSCustomObject]) { throw 'Settings file does not contain a JSON object.' }
     } catch {
-        Write-HubLog -Level Error -Message "Failed to read settings: $($_.Exception.Message) — using defaults"
+        # Keep the unreadable file: the next save would otherwise overwrite the user's data.
+        $backup = "$($script:SettingsFile).corrupt-$(Get-Date -Format 'yyyyMMddHHmmss')"
+        # Move, not copy: later reads then hit the "not found" path instead of writing a new backup each time.
+        try { Move-Item -Path $script:SettingsFile -Destination $backup -Force -ErrorAction Stop } catch { $backup = $null }
+        $note = if ($backup) { "moved to $backup" } else { 'backup failed' }
+        Write-HubLog -Level Warning -Message "Failed to read settings: $($_.Exception.Message) ($note) - using defaults"
         return $default
     }
+
+    # Backfill: a partial file must not lack keys that callers index into.
+    foreach ($property in $default.PSObject.Properties) {
+        if (-not $loaded.PSObject.Properties[$property.Name]) {
+            $loaded | Add-Member -MemberType NoteProperty -Name $property.Name -Value $property.Value
+        }
+    }
+    return $loaded
 }

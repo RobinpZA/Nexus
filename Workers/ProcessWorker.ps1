@@ -13,8 +13,10 @@
 .PARAMETER ModulePath
     Path to the target module's manifest (.psd1).
 .PARAMETER ModuleName
-    The module's registry name — used for window title, module-scoped Get-Command, and
-    log lines.
+    The module's registry (friendly) name — used for window title and log lines.
+.PARAMETER ModuleScope
+    The name the imported module is loaded under (its manifest base name) — used to scope
+    Get-Command. Can differ from ModuleName.
 .PARAMETER CommsDir
     Directory holding the command/response files and the reflection scripts
     (meta.ps1/synopsis.ps1/connection.ps1) that New-ProcessContext writes alongside it.
@@ -23,6 +25,7 @@
 param(
     [Parameter(Mandatory)][string]$ModulePath,
     [Parameter(Mandatory)][string]$ModuleName,
+    [Parameter(Mandatory)][string]$ModuleScope,
     [Parameter(Mandatory)][string]$CommsDir
 )
 
@@ -77,10 +80,13 @@ Write-Host ""
 
 while (-not (Test-Path $exitFile)) {
     if (Test-Path $commandFile) {
+        $requestId = $null
         try {
             $req = Get-Content $commandFile -Raw -Encoding utf8 | ConvertFrom-Json
             Remove-Item $commandFile -Force
 
+            # Echoed in every response so the host can discard answers to abandoned requests.
+            $requestId = [string]$req.requestId
             $cmd = $req.command
 
             if ($req.mode -in @('params', 'synopsis', 'connection')) {
@@ -92,9 +98,9 @@ while (-not (Test-Path $exitFile)) {
                         'connection' { $connectionScript }
                     }
                     $meta = & $script $cmd
-                    Write-WorkerFile -Path $responseFile -Value (@{success=$true; metadata=$meta; durationMs=0} | ConvertTo-Json -Depth 8 -Compress)
+                    Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$true; metadata=$meta; durationMs=0} | ConvertTo-Json -Depth 8 -Compress)
                 } catch {
-                    Write-WorkerFile -Path $responseFile -Value (@{success=$false; output=@(@{stream='Error'; message=$_.Exception.Message}); durationMs=0} | ConvertTo-Json -Depth 5 -Compress)
+                    Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$false; output=@(@{stream='Error'; message=$_.Exception.Message}); durationMs=0} | ConvertTo-Json -Depth 5 -Compress)
                 }
                 continue
             }
@@ -108,7 +114,7 @@ while (-not (Test-Path $exitFile)) {
             # Get-Command would also resolve every default-session cmdlet (Remove-Item,
             # Invoke-Expression, ...). See Get-RunspaceInvokeScript in
             # Invoke-InRunspace.ps1 for the runspace-mode equivalent of this check.
-            $cmdInfo = Get-Command $cmd -Module $ModuleName -ErrorAction SilentlyContinue
+            $cmdInfo = Get-Command $cmd -Module $ModuleScope -ErrorAction SilentlyContinue
             if (-not $cmdInfo) { throw "Command '$cmd' is not exported by module '$ModuleName'." }
 
             $boundParams = ConvertTo-BoundParameter -Command $cmdInfo -Parameters $params
@@ -131,9 +137,9 @@ while (-not (Test-Path $exitFile)) {
             }
             $sw.Stop()
 
-            Write-WorkerFile -Path $responseFile -Value (@{success=$ok; output=$output; durationMs=[math]::Round($sw.Elapsed.TotalMilliseconds)} | ConvertTo-Json -Depth 5 -Compress)
+            Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$ok; output=$output; durationMs=[math]::Round($sw.Elapsed.TotalMilliseconds)} | ConvertTo-Json -Depth 5 -Compress)
         } catch {
-            Write-WorkerFile -Path $responseFile -Value (@{success=$false; output=@(@{stream='Error'; message=$_.Exception.Message}); durationMs=0} | ConvertTo-Json -Depth 5 -Compress)
+            Write-WorkerFile -Path $responseFile -Value (@{requestId=$requestId; success=$false; output=@(@{stream='Error'; message=$_.Exception.Message}); durationMs=0} | ConvertTo-Json -Depth 5 -Compress)
         }
     }
     Start-Sleep -Milliseconds 200

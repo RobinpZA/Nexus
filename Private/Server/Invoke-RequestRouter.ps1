@@ -2,10 +2,34 @@ function Invoke-RequestRouter {
     <#
     .SYNOPSIS
         Dispatches a request to the first matching route.
+    .DESCRIPTION
+        Any failure in the pre-route checks (job sync, origin/session validation, logging)
+        is answered with a 500 so the client is not left hanging, and never escapes to
+        the request loop.
     .PARAMETER Context
         The HttpListenerContext for the current request.
     .EXAMPLE
         Invoke-RequestRouter -Context $context
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Net.HttpListenerContext]$Context)
+
+    try {
+        Invoke-RequestRouterCore -Context $Context
+    } catch {
+        Write-HubLog -Level Error -Message "Request pipeline error: $($_.Exception.Message)"
+        Write-ErrorResponse -Context $Context -StatusCode 500 -Message 'Internal error' -InternalDetail "Request pipeline error: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-RequestRouterCore {
+    <#
+    .SYNOPSIS
+        Runs the origin, session and route checks for one request.
+    .PARAMETER Context
+        The HttpListenerContext for the current request.
+    .EXAMPLE
+        Invoke-RequestRouterCore -Context $context
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][System.Net.HttpListenerContext]$Context)

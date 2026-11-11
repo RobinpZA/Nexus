@@ -128,5 +128,14 @@ function Write-ErrorResponse {
     }
 
     $data = @{ error = $true; statusCode = $StatusCode; message = $safeMessage }
-    Write-JsonResponse -Context $Context -Data $data -StatusCode $StatusCode
+
+    # The response may already have started or been closed (client gone, headers sent,
+    # earlier handler wrote a body). An error reply must never throw out of the request loop.
+    try {
+        Write-JsonResponse -Context $Context -Data $data -StatusCode $StatusCode
+    } catch [System.InvalidOperationException], [System.ObjectDisposedException], [System.Net.HttpListenerException] {
+        Write-HubLog -Level Debug -Message "Could not send HTTP $StatusCode error response: $($_.Exception.Message)"
+        # Headers or part of a body may already be out; abort so the client is not left hanging.
+        try { $Context.Response.Abort() } catch { Write-HubLog -Level Debug -Message "Response abort failed: $($_.Exception.Message)" }
+    }
 }

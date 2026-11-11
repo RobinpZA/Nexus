@@ -44,5 +44,10 @@ function Write-HubLog {
 
     # Append to daily log file
     $logFile = Join-Path $script:LogDir "Nexus_$(Get-Date -Format 'yyyyMMdd').log"
-    "$timestamp`t$Level`t$Source`t$Message" | Out-File -FilePath $logFile -Append -Encoding utf8
+    # A locked or unwritable log file must never fail the caller.
+    try {
+        "$timestamp`t$Level`t$Source`t$Message" | Out-File -FilePath $logFile -Append -Encoding utf8 -ErrorAction Stop
+    } catch {
+        $null = $_
+    }
 }

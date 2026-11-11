@@ -75,7 +75,8 @@ function Invoke-ContextMetadataRequest {
         [int]$TimeoutSeconds = 45
     )
 
-    $context = Get-ModuleRunspace -ModuleEntry $ModuleEntry
+    try { $context = Get-ModuleRunspace -ModuleEntry $ModuleEntry }
+    catch { return [PSCustomObject]@{ status = 'error'; message = $_.Exception.Message; data = $null } }
     if (-not $context) {
         return [PSCustomObject]@{ status = 'error'; message = "Failed to create context for: $($ModuleEntry.name)"; data = $null }
     }
@@ -133,7 +134,8 @@ function Invoke-ProcessMetadataRequest {
         [int]$TimeoutSeconds = 45
     )
 
-    $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -Request @{
+    $requestId = [guid]::NewGuid().ToString('N')
+    $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -RequestId $requestId -Request @{
         mode = $Mode; command = $Argument
     }
     if (-not $ProcessEntry) {
@@ -146,7 +148,7 @@ function Invoke-ProcessMetadataRequest {
             return [PSCustomObject]@{ status = 'error'; message = 'Process exited unexpectedly'; data = $null }
         }
 
-        $response = Receive-ProcessResponse -ProcessEntry $ProcessEntry
+        $response = Receive-ProcessResponse -ProcessEntry $ProcessEntry -RequestId $requestId
         if ($response) {
             $ProcessEntry.LastUsed = Get-Date
             if (-not $response.success) {
@@ -159,5 +161,6 @@ function Invoke-ProcessMetadataRequest {
         Start-Sleep -Milliseconds 150
     }
 
+    Remove-ModuleContext -Context $ProcessEntry
     return [PSCustomObject]@{ status = 'error'; message = 'No response from process (timeout)'; data = $null }
 }

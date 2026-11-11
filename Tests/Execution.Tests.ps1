@@ -356,7 +356,7 @@ Describe 'Execution: Background Job Sweep' {
     }
 
     It 'Invoke-RequestRouter calls Sync-BackgroundJob on every request' {
-        $funcDef = & (Get-Module Nexus) { (Get-Command 'Invoke-RequestRouter').ScriptBlock.ToString() }
+        $funcDef = & (Get-Module Nexus) { (Get-Command 'Invoke-RequestRouterCore').ScriptBlock.ToString() }
         $funcDef | Should -Match 'Sync-BackgroundJob'
     }
 }
@@ -576,5 +576,234 @@ Describe 'Execution: Process Worker End To End' {
     It 'Reports an error record as a failure' {
         $result = & (Get-Module Nexus) { param($e) Invoke-InRunspace -ModuleEntry $e -CommandName 'Write-FixtureFailure' } $script:Entry
         $result.success | Should -BeFalse
+    }
+
+    It 'Runs a command when registered under a different friendly name' {
+        $friendly = [PSCustomObject]@{ name = 'Friendly Fixture'; enabled = $true; isolation = 'process'; path = $script:Entry.path }
+        $result = & (Get-Module Nexus) { param($e) Invoke-InRunspace -ModuleEntry $e -CommandName 'Get-FixtureObject' } $friendly
+        $result.success | Should -BeTrue
+        @($result.output).Count | Should -Be 2
+    }
+}
+
+Describe 'Execution: Process Response Correlation' {
+    # A timed-out request leaves the worker running; its late response.json must never be
+    # read as the answer to a later request.
+
+    BeforeEach {
+        $script:Dir = Join-Path ([System.IO.Path]::GetTempPath()) "NexusCorr_$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:Dir | Out-Null
+    }
+    AfterEach { Remove-Item $script:Dir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'Ignores and deletes a response with a mismatched requestId' {
+        $file = Join-Path $script:Dir 'response.json'
+        '{"requestId":"old","success":true,"output":[]}' | Set-Content $file
+        $result = & (Get-Module Nexus) { param($f) Receive-ProcessResponse -ProcessEntry @{ ResponseFile = $f } -RequestId 'new' } $file
+        $result | Should -BeNullOrEmpty
+        Test-Path $file | Should -BeFalse
+    }
+
+    It 'Ignores a response with no requestId' {
+        $file = Join-Path $script:Dir 'response.json'
+        '{"success":true,"output":[]}' | Set-Content $file
+        $result = & (Get-Module Nexus) { param($f) Receive-ProcessResponse -ProcessEntry @{ ResponseFile = $f } -RequestId 'new' } $file
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'Returns a response whose requestId matches' {
+        $file = Join-Path $script:Dir 'response.json'
+        '{"requestId":"abc","success":true,"output":[]}' | Set-Content $file
+        $result = & (Get-Module Nexus) { param($f) Receive-ProcessResponse -ProcessEntry @{ ResponseFile = $f } -RequestId 'abc' } $file
+        $result.success | Should -BeTrue
+        Test-Path $file | Should -BeFalse
+    }
+
+    It 'Writes the requestId into command.json' {
+        $json = & (Get-Module Nexus) {
+            param($d)
+            $proc = [PSCustomObject]@{ HasExited = $false }
+            $entry = @{ Process = $proc; ResponseFile = (Join-Path $d 'response.json'); CommandFile = (Join-Path $d 'command.json') }
+            $null = Send-ProcessRequest -ProcessEntry $entry -ModuleEntry ([PSCustomObject]@{ name = 'X' }) -RequestId 'rid1' -Request @{ command = 'Get-Thing' }
+            Get-Content (Join-Path $d 'command.json') -Raw | ConvertFrom-Json
+        } $script:Dir
+        $json.requestId | Should -Be 'rid1'
+        $json.command | Should -Be 'Get-Thing'
+    }
+
+    It 'Kills the worker, discards the context and releases its busy flag' {
+        $result = & (Get-Module Nexus) {
+            $proc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 60' -PassThru -WindowStyle Hidden
+            $ctx = @{ Name = 'TimeoutCtx'; Process = $proc; CommsDir = $null; ActiveAsyncJobId = 'j1' }
+            $script:ModuleRunspaces = @{ TimeoutCtx = $ctx }
+            Remove-ModuleContext -Context $ctx
+            [PSCustomObject]@{
+                Exited   = $proc.HasExited
+                Removed  = -not $script:ModuleRunspaces.ContainsKey('TimeoutCtx')
+                Released = ($null -eq $ctx.ActiveAsyncJobId)
+            }
+        }
+        $result.Exited | Should -BeTrue
+        $result.Removed | Should -BeTrue
+        $result.Released | Should -BeTrue
+    }
+}
+
+Describe 'Execution: Friendly Module Name' {
+    # The loaded module is named after its .psd1, not after the name chosen at registration.
+
+    It 'Derives the scope name from the manifest path' {
+        $name = & (Get-Module Nexus) { Get-ModuleScopeName -ModuleEntry ([PSCustomObject]@{ name = 'Friendly'; path = 'C:\x\Real.Name.psd1' }) }
+        $name | Should -Be 'Real.Name'
+    }
+
+    It 'Falls back to the folder name when the path is not a manifest or script module' {
+        $name = & (Get-Module Nexus) { Get-ModuleScopeName -ModuleEntry ([PSCustomObject]@{ name = 'Friendly'; path = 'C:\x\FolderMod\' }) }
+        $name | Should -Be 'FolderMod'
+    }
+
+    It 'Runs a command in runspace mode under a different registered name' {
+        $path = Join-Path $PSScriptRoot 'Fixtures' 'FixtureModule' 'FixtureModule.psd1'
+        $result = & (Get-Module Nexus) {
+            param($p)
+            $script:ModuleRunspaces = @{}
+            $mod = [PSCustomObject]@{ name = 'My Friendly Name'; path = $p; isolation = 'runspace' }
+            try { Invoke-InRunspace -ModuleEntry $mod -CommandName 'Get-FixtureObject' }
+            finally { Stop-ModuleContext }
+        } $path
+        $result.success | Should -BeTrue
+        @($result.output).Count | Should -Be 2
+    }
+
+    It 'Refuses a command the module does not export even under a friendly name' {
+        $path = Join-Path $PSScriptRoot 'Fixtures' 'FixtureModule' 'FixtureModule.psd1'
+        $result = & (Get-Module Nexus) {
+            param($p)
+            $script:ModuleRunspaces = @{}
+            $mod = [PSCustomObject]@{ name = 'My Friendly Name'; path = $p; isolation = 'runspace' }
+            try { Invoke-InRunspace -ModuleEntry $mod -CommandName 'Get-Date' }
+            finally { Stop-ModuleContext }
+        } $path
+        $result.success | Should -BeFalse
+    }
+
+    It 'Runs a command through Invoke-RegisteredCommand under a different registered name' {
+        $path = Join-Path $PSScriptRoot 'Fixtures' 'FixtureModule' 'FixtureModule.psd1'
+        $result = & (Get-Module Nexus) {
+            param($p)
+            if (-not $script:ImportedModules) { $script:ImportedModules = @{} }
+            $mod = [PSCustomObject]@{ name = 'My Friendly Name'; path = $p }
+            try { Invoke-RegisteredCommand -ModuleEntry $mod -CommandName 'Get-FixtureObject' }
+            finally { $script:ImportedModules.Remove('My Friendly Name'); Remove-Module FixtureModule -ErrorAction SilentlyContinue }
+        } $path
+        $result.success | Should -BeTrue
+    }
+}
+
+Describe 'Execution: Isolation Mode Lookup' {
+
+    It 'Does not decide isolation when an Opened runspace context is reused' {
+        Mock -ModuleName Nexus Get-RequiredIsolationMode { 'runspace' }
+        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.Open()
+        try {
+            $returned = & (Get-Module Nexus) {
+                param($rs)
+                $ctx = @{ Name = 'ReuseMe'; Mode = 'runspace'; Runspace = $rs; Process = $null }
+                $script:ModuleRunspaces = @{ ReuseMe = $ctx }
+                $r = Get-ModuleRunspace -ModuleEntry ([PSCustomObject]@{ name = 'ReuseMe'; path = 'C:\none.psd1' })
+                $script:ModuleRunspaces = @{}
+                [object]::ReferenceEquals($r, $ctx)
+            } $runspace
+            $returned | Should -BeTrue
+            Should -Invoke -ModuleName Nexus Get-RequiredIsolationMode -Times 0 -Exactly
+        } finally { $runspace.Dispose() }
+    }
+
+    It 'Lets an explicit isolation override win and skips the scan' {
+        Mock -ModuleName Nexus Resolve-IsolationMode { 'runspace' }
+        $mode = & (Get-Module Nexus) { Get-RequiredIsolationMode -ModuleEntry ([PSCustomObject]@{ name = 'X'; path = 'C:\none.psd1'; isolation = 'process' }) }
+        $mode | Should -Be 'process'
+        Should -Invoke -ModuleName Nexus Resolve-IsolationMode -Times 0 -Exactly
+    }
+
+    It 'Scans once per module version and rescans when the manifest changes' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "NexusIso_$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        try {
+            $psd1 = Join-Path $dir 'IsoMod.psd1'
+            "@{ ModuleVersion = '1.0.0' }" | Set-Content $psd1
+            Mock -ModuleName Nexus Resolve-IsolationMode { 'runspace' }
+            $entry = [PSCustomObject]@{ name = 'IsoMod'; path = $psd1 }
+            & (Get-Module Nexus) { param($e) $script:IsolationModeCache = @{}; $null = Get-RequiredIsolationMode -ModuleEntry $e; $null = Get-RequiredIsolationMode -ModuleEntry $e } $entry
+            Should -Invoke -ModuleName Nexus Resolve-IsolationMode -Times 1 -Exactly
+
+            (Get-Item $psd1).LastWriteTimeUtc = (Get-Date).AddMinutes(5).ToUniversalTime()
+            & (Get-Module Nexus) { param($e) $null = Get-RequiredIsolationMode -ModuleEntry $e } $entry
+            Should -Invoke -ModuleName Nexus Resolve-IsolationMode -Times 2 -Exactly
+        } finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Execution: Runspace Import Failure' {
+
+    BeforeAll {
+        $script:BadDir = Join-Path ([System.IO.Path]::GetTempPath()) "NexusBad_$([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:BadDir | Out-Null
+        "throw 'boom from module'" | Set-Content (Join-Path $script:BadDir 'BadMod.psm1')
+        $script:BadPsd1 = Join-Path $script:BadDir 'BadMod.psd1'
+        "@{ RootModule = 'BadMod.psm1'; ModuleVersion = '1.0.0' }" | Set-Content $script:BadPsd1
+    }
+    AfterAll { Remove-Item $script:BadDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'Throws and registers no context when the module fails to import' {
+        $outcome = & (Get-Module Nexus) {
+            param($p)
+            $script:ModuleRunspaces = @{}
+            $mod = [PSCustomObject]@{ name = 'BadMod'; path = $p; isolation = 'runspace' }
+            $err = $null
+            try { $null = Get-ModuleRunspace -ModuleEntry $mod } catch { $err = $_.Exception.Message }
+            [PSCustomObject]@{ Error = $err; Registered = $script:ModuleRunspaces.ContainsKey('BadMod') }
+        } $script:BadPsd1
+        $outcome.Error | Should -Match 'Failed to import module .BadMod.'
+        $outcome.Registered | Should -BeFalse
+    }
+
+    It 'Throws for a path that does not exist' {
+        $outcome = & (Get-Module Nexus) {
+            $script:ModuleRunspaces = @{}
+            $mod = [PSCustomObject]@{ name = 'Missing'; path = 'C:\nope\Missing.psd1'; isolation = 'runspace' }
+            $err = $null
+            try { $null = Get-ModuleRunspace -ModuleEntry $mod } catch { $err = $_.Exception.Message }
+            $err
+        }
+        $outcome | Should -Match 'Failed to import module'
+    }
+
+    It 'Reports the failure as an error result from Invoke-InRunspace' {
+        $result = & (Get-Module Nexus) {
+            param($p)
+            $script:ModuleRunspaces = @{}
+            Invoke-InRunspace -ModuleEntry ([PSCustomObject]@{ name = 'BadMod'; path = $p; isolation = 'runspace' }) -CommandName 'Get-Thing'
+        } $script:BadPsd1
+        $result.success | Should -BeFalse
+        $result.output[0].message | Should -Match 'Failed to import'
+    }
+
+    It 'Imports a module whose path contains a typographic apostrophe' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "Nexus$([char]0x2019)s $([guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        try {
+            Copy-Item (Join-Path $PSScriptRoot 'Fixtures' 'FixtureModule' '*') $dir -Recurse
+            $path = Join-Path $dir 'FixtureModule.psd1'
+            $result = & (Get-Module Nexus) {
+                param($p)
+                $script:ModuleRunspaces = @{}
+                $mod = [PSCustomObject]@{ name = 'FixtureModule'; path = $p; isolation = 'runspace' }
+                try { Invoke-InRunspace -ModuleEntry $mod -CommandName 'Get-FixtureObject' }
+                finally { Stop-ModuleContext }
+            } $path
+            $result.success | Should -BeTrue
+        } finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
