@@ -17,7 +17,7 @@ function Remove-OldLog {
     if (-not (Test-Path $script:LogDir)) { return }
 
     $cutoff = (Get-Date).AddDays(-$RetentionDays)
-    $stale = @(Get-ChildItem -Path $script:LogDir -Filter '*.log' -ErrorAction SilentlyContinue |
+    $stale = @(Get-ChildItem -Path $script:LogDir -Filter 'Nexus_*.log' -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -lt $cutoff })
 
     if ($stale.Count -eq 0) { return }

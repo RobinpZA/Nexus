@@ -2,10 +2,13 @@ function Register-OpsModule {
     <#
     .SYNOPSIS
         Adds a new module to the Nexus registry.
+    .DESCRIPTION
+        Validates the module manifest path, reads its metadata and stores a registry entry.
+        A relative path is resolved to a full path before it is stored. Supports -WhatIf.
     .PARAMETER Name
         Friendly name for the module.
     .PARAMETER Path
-        Full path to the module's .psd1 manifest file.
+        Path to the module's .psd1 manifest file. A relative path is stored as a full path.
     .PARAMETER Category
         Module category (e.g., Security, Identity, Teams, Utility).
     .PARAMETER Tags
@@ -18,8 +21,12 @@ function Register-OpsModule {
         Icon name for the portal card (default: 'box').
     .EXAMPLE
         Register-OpsModule -Name "MyTool" -Path "C:\Tools\MyTool\MyTool.psd1" -Category "Utility"
+        Registers MyTool under the Utility category.
+    .EXAMPLE
+        Register-OpsModule -Name 'MyTool' -Path '.\MyTool\MyTool.psd1' -WhatIf
+        Shows what would be registered without changing the registry.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, Position = 0)]
         [string]$Name,
@@ -33,6 +40,11 @@ function Register-OpsModule {
         [string]$EntryCommand,
         [string]$Icon = 'box'
     )
+
+    # Store a full path so the entry does not depend on the current directory.
+    $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($resolved) { $Path = $resolved.ProviderPath }
+    else { $Path = [System.IO.Path]::GetFullPath($Path, (Get-Location -PSProvider FileSystem).ProviderPath) }
 
     # Validate path
     $validation = Test-ModulePath -Path $Path
@@ -72,6 +84,8 @@ function Register-OpsModule {
         lastValidated = (Get-Date).ToUniversalTime().ToString('o')
         status        = 'healthy'
     }
+
+    if (-not $PSCmdlet.ShouldProcess($Name, 'Register module')) { return }
 
     $registry.modules += $newEntry
     Write-ModuleRegistry -Registry $registry

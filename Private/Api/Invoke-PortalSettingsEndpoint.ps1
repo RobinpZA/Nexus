@@ -56,20 +56,30 @@ function Invoke-PortalScanRoot {
     if (-not $body.path) { Write-ErrorResponse -Context $Context -StatusCode 400 -Message 'Missing path field'; return }
 
     $path = [string]$body.path
+    $allowUnc = [bool]$settings.allowUncScanRoots
 
     if ($method -eq 'POST') {
+        $check = Test-ScanRootPath -Path $path -AllowUnc:$allowUnc
+        if (-not $check.Valid) { Write-ErrorResponse -Context $Context -StatusCode 400 -Message $check.Reason; return }
+
         $roots = [System.Collections.Generic.List[string]]::new()
         foreach ($root in $settings.scanRoots) { $roots.Add($root) }
-        if ($roots -contains $path) { Write-ErrorResponse -Context $Context -StatusCode 409 -Message 'Path already exists'; return }
+        # Stored entries may predate normalisation (e.g. a trailing slash), so compare trimmed forms.
+        $newKey = $check.Path.TrimEnd('\', '/')
+        if (@($roots | Where-Object { ([string]$_).TrimEnd('\', '/') -ieq $newKey }).Count -gt 0) { Write-ErrorResponse -Context $Context -StatusCode 409 -Message 'Path already exists'; return }
 
-        $roots.Add($path)
+        $roots.Add($check.Path)
         $settings.scanRoots = @($roots)
         Save-HubSettings -Settings $settings
-        Write-HubLog -Level Info -Message "Scan root added: $path"
+        Write-HubLog -Level Info -Message "Scan root added: $($check.Path)"
     } else {
-        $settings.scanRoots = @($settings.scanRoots | Where-Object { $_ -ne $path })
+        # The folder may be gone by now, so removal does not require it to exist; match
+        # the normalised form when it resolves and the raw text otherwise.
+        $check  = Test-ScanRootPath -Path $path -AllowUnc:$allowUnc
+        $target = if ($check.Valid) { $check.Path } else { $path }
+        $settings.scanRoots = @($settings.scanRoots | Where-Object { $_ -ine $target -and $_ -ine $path })
         Save-HubSettings -Settings $settings
-        Write-HubLog -Level Info -Message "Scan root removed: $path"
+        Write-HubLog -Level Info -Message "Scan root removed: $target"
     }
 
     Write-JsonResponse -Context $Context -Data @{ success = $true; scanRoots = @($settings.scanRoots) }
