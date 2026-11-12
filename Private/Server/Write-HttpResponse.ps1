@@ -19,6 +19,7 @@
 
     $Context.Response.Headers.Add('X-Content-Type-Options', 'nosniff')
     $Context.Response.Headers.Add('X-Frame-Options', 'DENY')
+    $Context.Response.Headers.Add('Referrer-Policy', 'no-referrer')
     $Context.Response.Headers.Add('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'")
 }
 
@@ -33,6 +34,9 @@ function Write-JsonResponse {
     $Context.Response.StatusCode = $StatusCode
     $Context.Response.ContentType = 'application/json; charset=utf-8'
     $Context.Response.ContentLength64 = $buffer.Length
+    $Context.Response.KeepAlive = $false
+    # API responses can carry settings and command output: never let a browser or proxy keep them.
+    $Context.Response.Headers.Add('Cache-Control', 'no-store')
     # SECURITY: No CORS headers — same-origin only (localhost serves both API and portal).
     # Cross-origin writes are rejected up front by Test-RequestOrigin; CORS alone does not stop them.
     Add-SecurityResponseHeader -Context $Context
@@ -62,7 +66,9 @@ function Write-StaticFile {
         return
     }
 
-    if (-not (Test-Path $requestedFull)) {
+    # -LiteralPath: '[' and ']' are valid in file names and must not be read as wildcards.
+    # -PathType Leaf: a directory URL (e.g. /css/) is a 404, not a read error.
+    if (-not (Test-Path -LiteralPath $requestedFull -PathType Leaf)) {
         Write-ErrorResponse -Context $Context -StatusCode 404 -Message 'Not found'
         return
     }
@@ -84,18 +90,79 @@ function Write-StaticFile {
     }
 
     try {
-        $buffer = [System.IO.File]::ReadAllBytes($requestedFull)
-        $Context.Response.StatusCode = 200
+        $entry = Get-StaticFileEntry -FullPath $requestedFull
         $Context.Response.ContentType = $contentType
-        $Context.Response.ContentLength64 = $buffer.Length
+        $Context.Response.KeepAlive = $false
         Add-SecurityResponseHeader -Context $Context
-        if ($ext -ne '.html') { $Context.Response.Headers.Add('Cache-Control', 'public, max-age=3600') }
-        else { $Context.Response.Headers.Add('Cache-Control', 'no-cache') }
-        $Context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
+        # no-cache = revalidate every time; the ETag makes that a cheap 304 when nothing changed.
+        $Context.Response.Headers.Add('Cache-Control', 'no-cache')
+        $Context.Response.Headers.Add('ETag', $entry.ETag)
+
+        if (Test-ETagMatch -IfNoneMatch $Context.Request.Headers['If-None-Match'] -ETag $entry.ETag) {
+            $Context.Response.StatusCode = 304
+            $Context.Response.ContentLength64 = 0
+            $Context.Response.OutputStream.Close()
+            return
+        }
+
+        $Context.Response.StatusCode = 200
+        $Context.Response.ContentLength64 = $entry.Bytes.Length
+        $Context.Response.OutputStream.Write($entry.Bytes, 0, $entry.Bytes.Length)
         $Context.Response.OutputStream.Close()
     } catch {
         Write-ErrorResponse -Context $Context -StatusCode 500 -Message 'Internal error'
     }
+}
+
+function Get-StaticFileEntry {
+    <#
+    .SYNOPSIS
+        Returns the cached bytes and weak ETag for a static file, re-reading it only when
+        its last-write ticks or length change.
+    .PARAMETER FullPath
+        Canonical path of an existing file.
+    #>
+    param([Parameter(Mandatory)][string]$FullPath)
+
+    if ($null -eq $script:StaticFileCache) { $script:StaticFileCache = @{} }
+    $info  = [System.IO.FileInfo]::new($FullPath)
+    $ticks = $info.LastWriteTimeUtc.Ticks
+    $len   = $info.Length
+
+    $cached = $script:StaticFileCache[$FullPath]
+    if ($cached -and $cached.Ticks -eq $ticks -and $cached.Length -eq $len) { return $cached }
+
+    $entry = [PSCustomObject]@{
+        Bytes  = [System.IO.File]::ReadAllBytes($FullPath)
+        Ticks  = $ticks
+        Length = $len
+        ETag   = "W/`"$ticks-$len`""
+    }
+    $script:StaticFileCache[$FullPath] = $entry
+    return $entry
+}
+
+function Test-ETagMatch {
+    <#
+    .SYNOPSIS
+        True when an If-None-Match header value matches the given ETag (weak comparison).
+    .PARAMETER IfNoneMatch
+        The raw request header value; may be empty, '*', or a comma-separated list.
+    .PARAMETER ETag
+        The current entity tag.
+    #>
+    param(
+        [AllowNull()][AllowEmptyString()][string]$IfNoneMatch,
+        [Parameter(Mandatory)][string]$ETag
+    )
+
+    if ([string]::IsNullOrWhiteSpace($IfNoneMatch)) { return $false }
+    $current = $ETag -replace '^W/', ''
+    foreach ($candidate in $IfNoneMatch.Split(',')) {
+        $value = ($candidate.Trim()) -replace '^W/', ''
+        if ($value -eq '*' -or $value -ceq $current) { return $true }
+    }
+    return $false
 }
 
 function Write-ErrorResponse {

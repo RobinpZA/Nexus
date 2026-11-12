@@ -39,8 +39,36 @@ function Get-ContextCommandSynopsis {
         [Parameter(Mandatory)][string[]]$CommandNames
     )
 
-    return Invoke-ContextMetadataRequest -ModuleEntry $ModuleEntry -Mode 'synopsis' `
-        -Script (Get-CommandSynopsisScript) -Argument $CommandNames
+    # Get-Help is slow, so synopses are cached per module. The key includes the manifest
+    # and script write times (see Get-ModuleFileKey), so an edited module misses the cache.
+    if (-not $script:SynopsisCache) { $script:SynopsisCache = @{} }
+    $key = Get-ModuleFileKey -ModuleEntry $ModuleEntry
+    if (-not $script:SynopsisCache.ContainsKey($key)) {
+        $prefix = "$($ModuleEntry.name)|$($ModuleEntry.path)|"
+        foreach ($stale in @($script:SynopsisCache.Keys | Where-Object { $_.StartsWith($prefix) })) {
+            $script:SynopsisCache.Remove($stale)
+        }
+        $script:SynopsisCache[$key] = @{}
+    }
+    $cached = $script:SynopsisCache[$key]
+
+    $missing = @($CommandNames | Where-Object { -not $cached.ContainsKey($_) })
+    if ($missing.Count -gt 0) {
+        $info = Invoke-ContextMetadataRequest -ModuleEntry $ModuleEntry -Mode 'synopsis' `
+            -Script (Get-CommandSynopsisScript) -Argument $missing
+        if ($info.status -ne 'ok') { return $info }
+        foreach ($name in $missing) {
+            $property = if ($info.data) { $info.data.PSObject.Properties[$name] } else { $null }
+            # A command without help is cached too, so it is not asked for again.
+            $cached[$name] = if ($property) { $property.Value } else { $null }
+        }
+    }
+
+    $synopses = [ordered]@{}
+    foreach ($name in $CommandNames) {
+        if ($cached[$name]) { $synopses[$name] = $cached[$name] }
+    }
+    return [PSCustomObject]@{ status = 'ok'; message = $null; data = [PSCustomObject]$synopses }
 }
 
 function Invoke-ContextMetadataRequest {

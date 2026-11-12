@@ -45,17 +45,34 @@ switch ($Task) {
         $config.TestResult.Enabled = $true
         $config.TestResult.OutputPath = "$PSScriptRoot\build\TestResults.xml"
         $config.Run.PassThru = $true
-        $result = Invoke-Pester -Configuration $config
-        # Without this the CI task reported success with failing tests.
-        if ($result.FailedCount -gt 0) {
-            throw "$($result.FailedCount) test(s) failed"
+        # Keep local runs off the real %LOCALAPPDATA%\Nexus: the module reads NEXUS_HOME at import.
+        $previousHome = $env:NEXUS_HOME
+        $tempHome = $null
+        if (-not $env:NEXUS_HOME) {
+            $tempHome = Join-Path ([System.IO.Path]::GetTempPath()) "nexus-test-home-$([guid]::NewGuid().ToString('N'))"
+            $env:NEXUS_HOME = $tempHome
+        }
+        try {
+            $result = Invoke-Pester -Configuration $config
+        } finally {
+            $env:NEXUS_HOME = $previousHome
+            if ($tempHome -and (Test-Path $tempHome)) { Remove-Item $tempHome -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        # Without this the CI task reported success with failing tests. Container failures
+        # (a test file that fails to load or in BeforeAll) leave FailedCount at 0.
+        $failedContainers = @($result.Containers | Where-Object Result -eq 'Failed')
+        if ($result.FailedCount -gt 0 -or $result.FailedContainersCount -gt 0 -or $result.Result -ne 'Passed') {
+            foreach ($container in $failedContainers) {
+                Write-Host "  Failed container: $($container.Name)" -ForegroundColor Red
+            }
+            throw "Pester run failed: $($result.FailedCount) test(s), $($result.FailedContainersCount) container(s), result '$($result.Result)'"
         }
     }
     'Build' {
         Write-Host '─── Build ───' -ForegroundColor Cyan
         if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
         New-Item $buildDir -ItemType Directory -Force | Out-Null
-        $items = @('Public', 'Private', 'Workers', 'Assets', 'Config', "$moduleName.psd1", "$moduleName.psm1")
+        $items = @('Public', 'Private', 'Workers', 'Assets', 'Config', "$moduleName.psd1", "$moduleName.psm1", "$moduleName.Format.ps1xml")
         foreach ($item in $items) {
             $src = Join-Path $PSScriptRoot $item
             if (Test-Path $src) {

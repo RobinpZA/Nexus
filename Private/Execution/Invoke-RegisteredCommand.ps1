@@ -92,24 +92,30 @@
     }
 
     # ── 5. Execute using the resolved CommandInfo object (not a string name) ──
-    $output = @()
+    # Synchronous and in-session: this path is never a background job, so there is nothing
+    # to cancel. Records are shaped as they are produced so those emitted before a
+    # terminating error are kept and returned with it.
+    $output = [System.Collections.Generic.List[object]]::new()
+    $summary = @{ Total = 0; Kept = 0; Truncated = $false }
+    $maxRows = Get-MaxOutputRow
     try {
         Write-HubLog -Level Info -Message "Executing: $CommandName (module-scoped)" -Source $ModuleEntry.name
-        $result = & $cmd @boundParams *>&1
         # Errors arrive on the success stream because of *>&1 — classify by record type,
         # otherwise a command that writes an error record is reported as succeeded.
-        $output += @(ConvertTo-HubOutput -Records $result)
-        $success = -not ($output | Where-Object { $_.stream -eq 'Error' })
+        & $cmd @boundParams *>&1 | ForEach-Object {
+            foreach ($line in (ConvertTo-HubOutput -Records (, $_) -MaxRows $maxRows -Summary $summary)) { $output.Add($line) }
+        }
     } catch {
-        $output += [PSCustomObject]@{ stream = 'Error'; message = $_.Exception.Message }
-        $success = $false
+        foreach ($line in (ConvertTo-HubOutput -Records (, $_))) { $output.Add($line) }
     }
+    $success = -not ($output | Where-Object { $_.stream -eq 'Error' })
 
     $duration = ((Get-Date) - $startTime).TotalMilliseconds
     Write-HubLog -Level Info -Message "Completed: $CommandName (${duration}ms, success=$success)" -Source $ModuleEntry.name
 
     return [PSCustomObject]@{
         success = $success; module = $ModuleEntry.name; command = $CommandName
-        durationMs = [math]::Round($duration, 0); output = $output
+        durationMs = [math]::Round($duration, 0); output = @($output)
+        truncated = [bool]$summary.Truncated; totalCount = [int]$summary.Total
     }
 }

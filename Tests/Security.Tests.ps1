@@ -1,11 +1,44 @@
-﻿BeforeAll {
+BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..' 'Nexus.psd1') -Force
     . (Join-Path $PSScriptRoot 'TestRegistry.ps1')
     # A fixture registry: these tests execute commands, and must never reach a live tenant.
     $script:TestRegistry = Enter-TestRegistry -FixtureRoot (Join-Path $PSScriptRoot 'Fixtures')
+
+    # A throwaway portal root with a sibling "secret" file and a look-alike sibling folder,
+    # so traversal tests can prove nothing outside the root is ever served.
+    $script:Sandbox = Join-Path ([System.IO.Path]::GetTempPath()) "NexusSec_$([guid]::NewGuid().ToString('N'))"
+    $script:SandboxPortal = Join-Path $script:Sandbox 'portal'
+    New-Item -ItemType Directory -Path (Join-Path $script:SandboxPortal 'css') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $script:Sandbox 'portal-backup') -Force | Out-Null
+    Set-Content -Path (Join-Path $script:SandboxPortal 'css/style.css') -Value 'body{}' -Encoding utf8
+    Set-Content -Path (Join-Path $script:SandboxPortal 'index.html') -Value '<html></html>' -Encoding utf8
+    Set-Content -Path (Join-Path $script:Sandbox 'secret.txt') -Value 'TOP-SECRET-OUTSIDE-ROOT' -Encoding utf8
+    Set-Content -Path (Join-Path $script:Sandbox 'portal-backup/secret.txt') -Value 'TOP-SECRET-SIBLING' -Encoding utf8
+    $script:OriginalPortalRoot = & (Get-Module Nexus) { $script:PortalRoot }
+    & (Get-Module Nexus) { param($d) $script:PortalRoot = $d } $script:SandboxPortal
+
+    # Runs a handler (called inside the module with the listener context) against a real
+    # loopback HttpListener and returns the client's response.
+    $script:Loopback = {
+        param([scriptblock]$Handler, $Arg)
+        $listener = [System.Net.HttpListener]::new()
+        $port = & { $p = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0); $p.Start(); $n = $p.LocalEndpoint.Port; $p.Stop(); $n }
+        $listener.Prefixes.Add("http://127.0.0.1:$port/")
+        $listener.Start()
+        $client = [System.Net.Http.HttpClient]::new()
+        try {
+            $task = $client.GetAsync("http://127.0.0.1:$port/x")
+            $ctx = $listener.GetContextAsync().GetAwaiter().GetResult()
+            & (Get-Module Nexus) $Handler $ctx $Arg
+            $task.GetAwaiter().GetResult()
+        } finally { $client.Dispose(); $listener.Close() }
+    }
+    $script:Body = { param($Response) $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult() }
 }
 
 AfterAll {
+    & (Get-Module Nexus) { param($d) $script:PortalRoot = $d } $script:OriginalPortalRoot
+    Remove-Item -Path $script:Sandbox -Recurse -Force -ErrorAction SilentlyContinue
     Exit-TestRegistry -Context $script:TestRegistry
 }
 
@@ -53,20 +86,76 @@ Describe 'Security: Command Execution Boundary' {
 
 Describe 'Security: Static File Path Traversal' {
 
-    It 'Write-StaticFile blocks directory traversal attempts' {
-        $portalRoot = & (Get-Module Nexus) { $script:PortalRoot }
-        $portalRootFull = [System.IO.Path]::GetFullPath($portalRoot).TrimEnd('\', '/')
-        $traversalPath  = '../../Config/modules.json'
-        $resolvedPath   = [System.IO.Path]::GetFullPath((Join-Path $portalRoot $traversalPath))
-        $resolvedPath.StartsWith($portalRootFull, [System.StringComparison]::OrdinalIgnoreCase) | Should -Be $false
+    # Calls the real Write-StaticFile over a loopback listener; the portal root is a sandbox
+    # with a secret file one level above it and a look-alike sibling folder (portal-backup).
+
+    It 'Never serves content outside the portal root for <Name>' -ForEach @(
+        @{ Name = 'parent segments';             Path = '../secret.txt' }
+        @{ Name = 'deep parent segments';        Path = '../../../../../../Windows/win.ini' }
+        @{ Name = 'parent after a folder';       Path = 'css/../../secret.txt' }
+        @{ Name = 'encoded parent segments';     Path = '%2e%2e/secret.txt' }
+        @{ Name = 'mixed-case encoded segments'; Path = '%2E%2E%2fsecret.txt' }
+        @{ Name = 'backslash parent segments';   Path = '..\secret.txt' }
+        @{ Name = 'mixed separators';            Path = 'css\..\..\secret.txt' }
+        @{ Name = 'a sibling folder prefix';     Path = '../portal-backup/secret.txt' }
+    ) {
+        $resp = & $script:Loopback { param($c, $p) Write-StaticFile -Context $c -FilePath $p } $Path
+        [int]$resp.StatusCode | Should -BeIn @(403, 404)
+        $text = & $script:Body $resp
+        $text | Should -Not -Match 'TOP-SECRET'
+        $text | Should -Not -Match 'for 16-bit app support'
     }
 
-    It 'Write-StaticFile allows valid portal paths' {
-        $portalRoot = & (Get-Module Nexus) { $script:PortalRoot }
-        $portalRootFull = [System.IO.Path]::GetFullPath($portalRoot).TrimEnd('\', '/')
-        $validPath    = 'css/style.css'
-        $resolvedPath = [System.IO.Path]::GetFullPath((Join-Path $portalRoot $validPath))
-        $resolvedPath.StartsWith($portalRootFull, [System.StringComparison]::OrdinalIgnoreCase) | Should -Be $true
+    It 'Never serves an absolute path outside the portal root' {
+        $resp = & $script:Loopback { param($c, $p) Write-StaticFile -Context $c -FilePath $p } (Join-Path $script:Sandbox 'secret.txt')
+        [int]$resp.StatusCode | Should -BeIn @(403, 404)
+        (& $script:Body $resp) | Should -Not -Match 'TOP-SECRET'
+    }
+
+    It 'Answers 403 for a plain parent-segment escape' {
+        $resp = & $script:Loopback { param($c) Write-StaticFile -Context $c -FilePath '../secret.txt' }
+        [int]$resp.StatusCode | Should -Be 403
+    }
+
+    It 'Answers 403 for a sibling folder that shares the portal root prefix' {
+        $resp = & $script:Loopback { param($c) Write-StaticFile -Context $c -FilePath '../portal-backup/secret.txt' }
+        [int]$resp.StatusCode | Should -Be 403
+    }
+
+    It 'Serves a valid portal path' {
+        $resp = & $script:Loopback { param($c) Write-StaticFile -Context $c -FilePath 'css/style.css' }
+        [int]$resp.StatusCode | Should -Be 200
+        (& $script:Body $resp) | Should -Match 'body'
+    }
+
+    It 'Serves a path that dips out of a folder and back into the portal root' {
+        $resp = & $script:Loopback { param($c) Write-StaticFile -Context $c -FilePath 'css/../css/style.css' }
+        [int]$resp.StatusCode | Should -Be 200
+    }
+
+    It 'Does not serve a file outside the root when the request carries encoded dot segments' {
+        # Raw socket through the real router: HttpClient would normalise the dot segments first.
+        $listener = [System.Net.HttpListener]::new()
+        $port = & { $p = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0); $p.Start(); $n = $p.LocalEndpoint.Port; $p.Stop(); $n }
+        $listener.Prefixes.Add("http://127.0.0.1:$port/")
+        $listener.Start()
+        $tcp = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port)
+        try {
+            $stream = $tcp.GetStream()
+            $raw = [System.Text.Encoding]::ASCII.GetBytes("GET /css/%2e%2e/%2e%2e/secret.txt HTTP/1.1`r`nHost: 127.0.0.1:$port`r`nConnection: close`r`n`r`n")
+            $stream.Write($raw, 0, $raw.Length)
+            $ctxTask = $listener.GetContextAsync()
+            if ($ctxTask.Wait(5000)) {
+                & (Get-Module Nexus) { param($c) Invoke-RequestRouter -Context $c } $ctxTask.Result
+            }
+            $stream.ReadTimeout = 5000
+            $reader = [System.IO.StreamReader]::new($stream)
+            $response = $reader.ReadToEnd()
+        } finally { $tcp.Dispose(); $listener.Close() }
+
+        $response | Should -Not -BeNullOrEmpty
+        $response | Should -Not -Match 'TOP-SECRET'
+        $response | Should -Not -Match '^HTTP/1\.1 200'
     }
 }
 
@@ -125,18 +214,24 @@ Describe 'Security: Request Body Size Limit' {
 Describe 'Security: Response Headers' {
 
     It 'Add-SecurityResponseHeader sends frame-ancestors as a real header, not just the <meta> tag' {
-        # frame-ancestors has no effect via <meta> per spec — the header is the only
+        # frame-ancestors has no effect via <meta> per spec - the header is the only
         # thing that actually stops the portal from being framed.
-        $funcDef = & (Get-Module Nexus) { (Get-Command 'Add-SecurityResponseHeader').ScriptBlock.ToString() }
-        $funcDef | Should -Match 'X-Frame-Options'
-        $funcDef | Should -Match "frame-ancestors 'none'"
+        $resp = & $script:Loopback { param($c) Add-SecurityResponseHeader -Context $c; $c.Response.OutputStream.Close() }
+        $resp.Headers.GetValues('X-Frame-Options') | Should -Be 'DENY'
+        $resp.Headers.GetValues('Content-Security-Policy') | Should -Match "frame-ancestors 'none'"
     }
 
-    It 'Write-JsonResponse and Write-StaticFile both send the security headers' {
-        $jsonDef = & (Get-Module Nexus) { (Get-Command 'Write-JsonResponse').ScriptBlock.ToString() }
-        $staticDef = & (Get-Module Nexus) { (Get-Command 'Write-StaticFile').ScriptBlock.ToString() }
-        $jsonDef | Should -Match 'Add-SecurityResponseHeader'
-        $staticDef | Should -Match 'Add-SecurityResponseHeader'
+    It 'Write-JsonResponse sends the security headers' {
+        $resp = & $script:Loopback { param($c) Write-JsonResponse -Context $c -Data @{ ok = $true } }
+        $resp.Headers.GetValues('X-Frame-Options') | Should -Be 'DENY'
+        $resp.Headers.GetValues('Content-Security-Policy') | Should -Match "frame-ancestors 'none'"
+    }
+
+    It 'Write-StaticFile sends the security headers' {
+        $resp = & $script:Loopback { param($c) Write-StaticFile -Context $c -FilePath 'css/style.css' }
+        [int]$resp.StatusCode | Should -Be 200
+        $resp.Headers.GetValues('X-Frame-Options') | Should -Be 'DENY'
+        $resp.Headers.GetValues('Content-Security-Policy') | Should -Match "frame-ancestors 'none'"
     }
 }
 
@@ -152,8 +247,8 @@ Describe 'Security: Error Response Sanitisation' {
 Describe 'Security: CORS Headers' {
 
     It 'Write-JsonResponse does not add Access-Control-Allow-Origin header' {
-        $funcDef = & (Get-Module Nexus) { (Get-Command 'Write-JsonResponse').ScriptBlock.ToString() }
-        $funcDef | Should -Not -Match 'Access-Control-Allow-Origin'
+        $resp = & $script:Loopback { param($c) Write-JsonResponse -Context $c -Data @{ ok = $true } }
+        $resp.Headers.Contains('Access-Control-Allow-Origin') | Should -BeFalse
     }
 }
 
@@ -226,7 +321,8 @@ Describe 'Security: Runspace Parameter Binding' {
             } finally { $ps.Dispose() }
         }
 
-        $result | Should -Be (Get-Date -Format 'yyyy')
+        # The script returns shaped hub output records, not raw objects.
+        $result.message | Should -Be (Get-Date -Format 'yyyy')
     }
 
     It 'Does not build the command line by string concatenation' {
@@ -341,11 +437,8 @@ Describe 'Security: Process Worker Is a Static Shipped File' {
         $cmd.Parameters.Keys | Should -Contain 'CommsDir'
     }
 
-    It 'New-ProcessContext launches the static file instead of writing script text to CommsDir' {
-        $funcDef = & (Get-Module Nexus) { (Get-Command 'New-ProcessContext').ScriptBlock.ToString() }
-        $funcDef | Should -Match "Workers.*ProcessWorker\.ps1"
-        $funcDef | Should -Not -Match 'workerScript'
-    }
+    # The launch itself (-File pointing at Workers/ProcessWorker.ps1) is asserted behaviourally by
+    # 'Execution: Process Worker Launch' in Execution.Tests.ps1.
 }
 
 Describe 'Security: Enable-NexusAutoStart Supports ShouldProcess' {

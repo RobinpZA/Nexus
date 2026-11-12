@@ -26,7 +26,7 @@ function Get-PortalHealth {
     $modules = @()
 
     foreach ($mod in $activeModules) {
-        $pathExists = Test-Path $mod.path
+        $pathExists = Test-Path -LiteralPath $mod.path
         $status = if ($pathExists) { 'healthy' } else { 'missing' }
 
         $modules += @{
@@ -36,7 +36,8 @@ function Get-PortalHealth {
         }
     }
 
-    $healthy = ($modules | Where-Object { $_.status -eq 'healthy' }).Count
+    # @() matters: a single match is a hashtable, whose .Count is its key count (3), not 1.
+    $healthy = @($modules | Where-Object { $_.status -eq 'healthy' }).Count
     $total   = $modules.Count
 
     $data = @{

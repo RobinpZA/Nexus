@@ -6,7 +6,7 @@ function Start-Nexus {
         Starts a local HTTP server serving the Nexus portal. Optionally scans for modules on startup.
         Press Ctrl+C or use the portal's close button to stop.
     .PARAMETER Port
-        Specific port to bind to. If not specified, tries ports in the configured range (default 8090-8099).
+        Specific port to bind to. If not specified, tries the configured defaultPort first, then falls back to the portRange scan (default 8090-8099).
     .PARAMETER NoBrowser
         Do not auto-open the browser.
     .PARAMETER Scan
@@ -58,16 +58,19 @@ function Start-Nexus {
     }
 
     # Start HTTP listener
-    $listenerParams = @{}
-    if ($Port) {
-        $listenerParams['Port'] = $Port
-    } else {
-        $listenerParams['PortRangeStart'] = $settings.portRange[0]
-        $listenerParams['PortRangeEnd']   = $settings.portRange[1]
-    }
-
+    # An explicit -Port is used alone; otherwise defaultPort is tried first, then portRange.
     $script:SessionToken = New-SessionToken
-    $server = Start-HttpListener @listenerParams
+    $server = $null
+    $listenerAttempts = @(Get-ListenerPortParameter -Port $Port -Settings $settings)
+    foreach ($attempt in $listenerAttempts) {
+        try {
+            $server = Start-HttpListener @attempt
+            break
+        } catch {
+            if ($attempt -eq $listenerAttempts[-1]) { throw }
+            Write-HubLog -Level Warning -Message "$($_.Exception.Message) Falling back to the next port option."
+        }
+    }
 
     # Open-Nexus reads this to reopen the portal later. It lives under the per-user data
     # root (%LOCALAPPDATA% by default), which other users cannot read.

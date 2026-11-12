@@ -21,6 +21,7 @@ function Read-HubSettings {
         logRetentionDays     = 30
         scanOnStartup        = $false
         scanRoots            = @()
+        allowUncScanRoots    = $false
         scanDepth            = 2
         scanExclude          = @('node_modules', '.git', 'bin', 'obj', 'build', 'Tests')
         scanPublishedModules = $false
@@ -29,6 +30,7 @@ function Read-HubSettings {
         favouriteCommands    = @()
         recentCommands       = @()
         maxRecentCommands    = 20
+        maxOutputRows        = 1000
     }
 
     if (-not (Test-Path $script:SettingsFile)) {

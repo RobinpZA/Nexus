@@ -258,7 +258,7 @@ Describe 'Execution: Runspace Job Timeout' {
     # jobs previously had no equivalent, so a hung command held its context's
     # ActiveAsyncJobId forever.
 
-    It 'Fails a hung job once it passes its TimeoutAt, freeing the context' {
+    It 'Fails a hung job once it passes its TimeoutAt, freeing the context once the stop is reaped' {
         $result = & (Get-Module Nexus) {
             $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
             $runspace.Open()
@@ -275,17 +275,22 @@ Describe 'Execution: Runspace Job Timeout' {
             }
 
             Complete-RunspaceJob -Job $job
+            $busyAfterTimeout = ($context.ActiveAsyncJobId -eq 'job1')
+            $deadline = (Get-Date).AddSeconds(15)
+            while (-not $job.StopReaped -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50; Complete-PendingStop -Job $job }
             $runspace.Dispose()
 
             [PSCustomObject]@{
                 Status         = $job.Status
                 Message        = $job.Result.output[0].message
+                BusyAfterTimeout = $busyAfterTimeout
                 ContextCleared = ($null -eq $context.ActiveAsyncJobId)
             }
         }
 
         $result.Status | Should -Be 'failed'
         $result.Message | Should -Be 'Command timed out'
+        $result.BusyAfterTimeout | Should -BeTrue
         $result.ContextCleared | Should -BeTrue
     }
 
@@ -356,8 +361,21 @@ Describe 'Execution: Background Job Sweep' {
     }
 
     It 'Invoke-RequestRouter calls Sync-BackgroundJob on every request' {
-        $funcDef = & (Get-Module Nexus) { (Get-Command 'Invoke-RequestRouterCore').ScriptBlock.ToString() }
-        $funcDef | Should -Match 'Sync-BackgroundJob'
+        Mock Sync-BackgroundJob { } -ModuleName Nexus
+        $listener = [System.Net.HttpListener]::new()
+        $port = & { $p = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0); $p.Start(); $n = $p.LocalEndpoint.Port; $p.Stop(); $n }
+        $listener.Prefixes.Add("http://127.0.0.1:$port/")
+        $listener.Start()
+        $client = [System.Net.Http.HttpClient]::new()
+        try {
+            # Unauthenticated health check: exercises the router without touching any module.
+            $task = $client.GetAsync("http://127.0.0.1:$port/api/health")
+            $ctx = $listener.GetContextAsync().GetAwaiter().GetResult()
+            & (Get-Module Nexus) { param($c) Invoke-RequestRouter -Context $c } $ctx
+            $null = $task.GetAwaiter().GetResult()
+        } finally { $client.Dispose(); $listener.Close() }
+
+        Should -Invoke Sync-BackgroundJob -ModuleName Nexus -Times 1 -Exactly
     }
 }
 
@@ -392,7 +410,7 @@ Describe 'Execution: Process Worker Launch' {
 
             try {
                 $entry = @{
-                    name = 'SpacedModule'
+                    name = 'Spaced Module'
                     path = Join-Path ([System.IO.Path]::GetTempPath()) 'Spaced Module' 'Spaced Module.psd1'
                 }
                 $null = New-ProcessContext -ModuleEntry ([PSCustomObject]$entry)
@@ -401,11 +419,11 @@ Describe 'Execution: Process Worker Launch' {
                     Arguments  = $script:CapturedLaunch
                     WorkerPath = Join-Path $script:NexusRoot 'Workers' 'ProcessWorker.ps1'
                     ModulePath = $entry.path
-                    CommsDir   = Join-Path $script:LogDir 'process_SpacedModule'
+                    CommsDir   = Join-Path $script:LogDir 'process_Spaced_Module'
                 }
             } finally {
                 Remove-Item $script:LogDir -Recurse -Force -ErrorAction SilentlyContinue
-                $script:ModuleRunspaces.Remove('SpacedModule')
+                $script:ModuleRunspaces.Remove('Spaced Module')
                 $script:LogDir = $originalLogDir
                 Remove-Item Function:\Start-Process -ErrorAction SilentlyContinue
             }
@@ -636,9 +654,10 @@ Describe 'Execution: Process Response Correlation' {
             $proc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 60' -PassThru -WindowStyle Hidden
             $ctx = @{ Name = 'TimeoutCtx'; Process = $proc; CommsDir = $null; ActiveAsyncJobId = 'j1' }
             $script:ModuleRunspaces = @{ TimeoutCtx = $ctx }
+            $procId = $proc.Id
             Remove-ModuleContext -Context $ctx
             [PSCustomObject]@{
-                Exited   = $proc.HasExited
+                Exited   = -not (Get-Process -Id $procId -ErrorAction SilentlyContinue)
                 Removed  = -not $script:ModuleRunspaces.ContainsKey('TimeoutCtx')
                 Released = ($null -eq $ctx.ActiveAsyncJobId)
             }

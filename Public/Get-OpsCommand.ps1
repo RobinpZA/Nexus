@@ -1,8 +1,12 @@
-﻿function Get-OpsCommand {
+function Get-OpsCommand {
     <#
     .SYNOPSIS
         Lists or searches commands across all registered modules.
-        Reads from manifests — does not import modules.
+    .DESCRIPTION
+        Reads the exported command names from each enabled module's manifest, so modules are
+        not imported. Emits one Nexus.Command object per command (Command, Module, Category,
+        Type), which can be piped to Where-Object, Select-Object and so on. The console shows
+        them as a table. Writes an Info log entry and returns nothing when nothing matches.
     .PARAMETER Module
         Filter commands to a specific module.
     .PARAMETER Search
@@ -15,6 +19,8 @@
         Get-OpsCommand -Module CA-BaselineAuditor
     .EXAMPLE
         Get-OpsCommand -Search "report"
+    .EXAMPLE
+        Get-OpsCommand -Tag M365 | Where-Object Module -like 'CA-*'
     #>
     [CmdletBinding()]
     param(
@@ -46,6 +52,7 @@
             if ($Search -and $cmdName -notmatch [regex]::Escape($Search)) { continue }
 
             $allCommands += [PSCustomObject]@{
+                PSTypeName = 'Nexus.Command'
                 Command  = $cmdName
                 Module   = $mod.name
                 Category = $mod.category
@@ -59,5 +66,5 @@
         return
     }
 
-    $allCommands | Format-Table -AutoSize
+    $allCommands
 }

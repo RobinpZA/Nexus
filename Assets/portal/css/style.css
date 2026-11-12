@@ -658,3 +658,38 @@ body::before {
 /* Async job running animation */
 .run-status.running { color: var(--accent); animation: pulse-running 1.5s ease-in-out infinite; }
 @keyframes pulse-running { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+/* ═══════════════════════════════════════════════════════════
+   Accessibility, validation and state additions (v1.3)
+   ═══════════════════════════════════════════════════════════ */
+.visually-hidden {
+    position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+[hidden] { display: none !important; }
+
+.health-badge.unknown { background: rgba(240,162,58,0.15); color: var(--warning); }
+.health-badge.unavailable { background: rgba(255,111,97,0.15); color: var(--error); }
+
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn.is-active { background: rgba(68,179,255,0.15); border-color: var(--accent); color: var(--accent); }
+.run-bar .btn-sm { min-width: 0; }
+
+.form-control.invalid, .form-control[aria-invalid="true"] { border-color: var(--error); }
+.form-message { color: var(--error); font-size: 12px; min-height: 0; }
+.form-message:not(:empty) { margin-top: 4px; }
+
+.console-note { color: var(--warning); font-family: var(--font-sans); font-size: 12px; margin-bottom: 8px; }
+.error-state .btn { margin-top: 16px; }
+
+/* Focusable rows rendered as links / buttons */
+a.cmd-row, a.cmd-row:hover { color: var(--text-primary); text-decoration: none; }
+.cmd-category-header {
+    width: 100%; background: none; border: 0; color: inherit; font: inherit; text-align: left;
+}
+td a.cmd-name { color: var(--accent); font-weight: 500; }
+td a.cmd-name:hover { text-decoration: underline; }
+a.recent-cmd:hover { text-decoration: underline; }
+.module-card:focus-visible, .recent-item:focus-visible, td a.cmd-name:focus-visible, a.recent-cmd:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+}

@@ -38,6 +38,10 @@ function Sync-BackgroundJob {
     foreach ($job in @($script:BackgroundJobs.Values | Where-Object { $_.Status -eq 'running' })) {
         Update-BackgroundJobState -Job $job
     }
+    # Cancelled or timed-out runspace jobs whose pipeline has not confirmed it stopped.
+    foreach ($job in @($script:BackgroundJobs.Values | Where-Object { $_.StopRequestedAt -and -not $_.StopReaped })) {
+        Complete-PendingStop -Job $job
+    }
 }
 
 function Get-BackgroundCommandResult {
@@ -93,53 +97,49 @@ function Complete-RunspaceJob {
     if (-not $Job.AsyncResult.IsCompleted) {
         if ((Get-Date) -lt $Job.TimeoutAt) { return }
 
-        try { $Job.PowerShell.Stop() } catch {
-            Write-HubLog -Level Debug -Message "Failed to stop timed-out job $($Job.Id): $($_.Exception.Message)"
-        }
+        Stop-RunspaceJobAsync -Job $Job
+        $built = Get-RunspaceCommandOutput -Output $Job.Output -Summary $Job.Summary -ErrorMessage 'Command timed out'
         $Job.Result = [PSCustomObject]@{
-            success = $false
-            output = @([PSCustomObject]@{ stream = 'Error'; message = 'Command timed out' })
+            success = $false; output = @($built.output)
+            truncated = $built.truncated; totalCount = $built.totalCount
             durationMs = [math]::Round(((Get-Date) - $Job.StartedAt).TotalMilliseconds, 0)
         }
         $Job.Status = 'failed'
-        $Job.PowerShell.Dispose()
-        Clear-JobContext -Job $Job
+        # The context stays busy until Complete-PendingStop reaps the stop.
         Write-HubLog -Level Error -Message "Background job $($Job.Id) timed out"
         return
     }
 
+    $errorMessage = $null
     try {
         $results = $Job.PowerShell.EndInvoke($Job.AsyncResult)
+        if (-not $Job.Output) {
+            # A job tracked without a streaming collection: shape what EndInvoke returned.
+            $summary = @{}
+            $shaped = @(ConvertTo-HubOutput -Records $results -MaxRows (Get-MaxOutputRow) -Summary $summary)
+            $Job.Output = $shaped
+            $Job.Summary = $summary
+        }
+    } catch {
+        # EndInvoke wraps the real failure; surface the inner message to the portal.
+        $errorMessage = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
+    }
 
-        # Commands run with *>&1, so classify by record type — Streams.Error stays empty.
-        $output = @()
-        $output += @(ConvertTo-HubOutput -Records $results)
-        $output += @(ConvertTo-HubOutput -Records @($Job.PowerShell.Streams.Error))
-        $output += @(ConvertTo-HubOutput -Records @($Job.PowerShell.Streams.Warning))
-        $output += @(ConvertTo-HubOutput -Records @($Job.PowerShell.Streams.Information))
-
-        $success = -not ($output | Where-Object { $_.stream -eq 'Error' })
+    try {
+        $built = Get-RunspaceCommandOutput -Output $Job.Output -Summary $Job.Summary -ErrorMessage $errorMessage
         $Job.Result = [PSCustomObject]@{
-            success = $success; output = $output
+            success = $built.success; output = @($built.output)
+            truncated = $built.truncated; totalCount = $built.totalCount
             durationMs = [math]::Round(((Get-Date) - $Job.StartedAt).TotalMilliseconds, 0)
         }
-        $Job.Status = if ($success) { 'completed' } else { 'failed' }
+        $Job.Status = if ($built.success) { 'completed' } else { 'failed' }
 
         # Mirrors what Invoke-RunspaceSync does for a synchronous connect — connection
         # commands run through this same async path now, so it's the only place left
         # that updates it.
         $verb = Get-CommandVerb -CommandName $Job.Command
-        if ($verb -eq 'Connect' -and $success) { $Job.Context.Connected = $true }
+        if ($verb -eq 'Connect' -and $built.success) { $Job.Context.Connected = $true }
         if ($verb -eq 'Disconnect') { $Job.Context.Connected = $false }
-    } catch {
-        # EndInvoke wraps the real failure; surface the inner message to the portal.
-        $message = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
-        $Job.Result = [PSCustomObject]@{
-            success = $false
-            output = @([PSCustomObject]@{ stream = 'Error'; message = $message })
-            durationMs = [math]::Round(((Get-Date) - $Job.StartedAt).TotalMilliseconds, 0)
-        }
-        $Job.Status = 'failed'
     } finally {
         # Dispose the PowerShell instance but KEEP the runspace alive
         # (persistent runspaces maintain auth state between commands)
@@ -148,6 +148,83 @@ function Complete-RunspaceJob {
     }
 
     Write-HubLog -Level Info -Message "Background job $($Job.Id) completed ($($Job.Status))"
+}
+
+function Stop-RunspaceJobAsync {
+    <#
+    .SYNOPSIS
+        Asks a runspace job's pipeline to stop without waiting for it.
+    .DESCRIPTION
+        Uses BeginStop: a synchronous Stop() blocks until the pipeline obeys, and a
+        command stuck in a call PowerShell cannot interrupt would freeze the listener.
+        Complete-PendingStop (run from Sync-BackgroundJob and Get-ActiveContextJob)
+        disposes the PowerShell instance once it has stopped, or tears the runspace down
+        if it has not after five seconds. The context stays busy until then. If BeginStop
+        throws, the context is recycled immediately.
+    .PARAMETER Job
+        The tracked job entry.
+    .EXAMPLE
+        Stop-RunspaceJobAsync -Job $job
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Job)
+
+    $Job.StopRequestedAt = Get-Date
+    $Job.StopReaped = $false
+    $Job.StopAsync = $null
+    try { $Job.StopAsync = $Job.PowerShell.BeginStop($null, $null) } catch {
+        Write-HubLog -Level Warning -Message "Failed to stop job $($Job.Id): $($_.Exception.Message) - recycling its runspace"
+        # Nothing will ever confirm the stop: drop the context now instead of holding it busy.
+        if ($Job.Context) { Remove-ModuleContext -Context $Job.Context -JobId $Job.Id }
+        Clear-JobContext -Job $Job
+        $Job.StopReaped = $true
+    }
+}
+
+function Complete-PendingStop {
+    <#
+    .SYNOPSIS
+        Finishes off a job whose stop was requested: dispose it once stopped, or drop its
+        runspace if it has not stopped after five seconds.
+    .PARAMETER Job
+        The tracked job entry.
+    .PARAMETER GraceSeconds
+        How long a pipeline gets to stop before its runspace is discarded.
+    .EXAMPLE
+        Complete-PendingStop -Job $job
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Job,
+        [int]$GraceSeconds = 5
+    )
+
+    if ($Job.StopReaped) { return }
+
+    $stopped = $Job.StopAsync -and $Job.StopAsync.IsCompleted
+    if (-not $stopped) {
+        $state = try { [string]$Job.PowerShell.InvocationStateInfo.State } catch { '' }
+        $stopped = $state -in @('Stopped', 'Failed', 'Completed')
+    }
+    if ($stopped) {
+        try { $Job.PowerShell.Dispose() } catch {
+            Write-HubLog -Level Debug -Message "Failed to dispose stopped job $($Job.Id): $($_.Exception.Message)"
+        }
+        $Job.StopReaped = $true
+        # The old pipeline is gone: the context's runspace is free again.
+        Clear-JobContext -Job $Job
+        return
+    }
+
+    if (((Get-Date) - $Job.StopRequestedAt).TotalSeconds -lt $GraceSeconds) { return }
+
+    # The pipeline ignored the stop request. Discard the runspace so the module context
+    # is recreated on the next call. The PowerShell instance is left to the closing
+    # runspace: disposing it directly would wait on the stuck pipeline.
+    Write-HubLog -Level Warning -Message "Job $($Job.Id) did not stop within $GraceSeconds s - discarding its runspace"
+    if ($Job.Context) { Remove-ModuleContext -Context $Job.Context -JobId $Job.Id }
+    Clear-JobContext -Job $Job
+    $Job.StopReaped = $true
 }
 
 function Complete-ProcessJob {
@@ -171,7 +248,11 @@ function Complete-ProcessJob {
     $response = Receive-ProcessResponse -ProcessEntry $context -RequestId ([string]$Job.RequestId)
     if ($response) {
         $result = ConvertFrom-ProcessResponse -Response $response -ModuleName $Job.Module -CommandName $Job.Command -DurationMs $duration
-        $Job.Result = [PSCustomObject]@{ success = $result.success; output = @($result.output); durationMs = $result.durationMs }
+        $Job.Result = [PSCustomObject]@{
+            success = $result.success; output = @($result.output)
+            truncated = $result.truncated; totalCount = $result.totalCount
+            durationMs = $result.durationMs
+        }
         $Job.Status = if ($result.success) { 'completed' } else { 'failed' }
         Update-ProcessConnectionState -ProcessEntry $context -CommandName $Job.Command -Success $result.success
         Clear-JobContext -Job $Job
@@ -230,7 +311,7 @@ function Remove-CompletedJob {
 
     if (-not $script:BackgroundJobs) { return }
 
-    $finished = @($script:BackgroundJobs.Values | Where-Object { $_.Status -ne 'running' } | Sort-Object StartedAt -Descending)
+    $finished = @($script:BackgroundJobs.Values | Where-Object { $_.Status -ne 'running' -and -not ($_.StopRequestedAt -and -not $_.StopReaped) } | Sort-Object StartedAt -Descending)
     if ($finished.Count -le $Keep) { return }
 
     foreach ($job in $finished[$Keep..($finished.Count - 1)]) {

@@ -2,6 +2,11 @@ function Get-OpsModule {
     <#
     .SYNOPSIS
         Lists registered modules from the Nexus registry.
+    .DESCRIPTION
+        Emits one Nexus.Module object per enabled registry entry (Name, Category, Version,
+        Status, Description, Tags, Path, EntryCmd), which can be piped to Where-Object,
+        Select-Object and so on. The console shows them as a table. Writes an Info log entry
+        and returns nothing when no module matches the filters.
     .PARAMETER Name
         Filter by module name (supports wildcards).
     .PARAMETER Category
@@ -16,6 +21,8 @@ function Get-OpsModule {
         Get-OpsModule -Category Security
     .EXAMPLE
         Get-OpsModule -Tag "M365"
+    .EXAMPLE
+        Get-OpsModule | Where-Object Status -eq 'missing'
     #>
     [CmdletBinding()]
     param(
@@ -49,6 +56,7 @@ function Get-OpsModule {
 
     $modules | ForEach-Object {
         [PSCustomObject]@{
+            PSTypeName  = 'Nexus.Module'
             Name        = $_.name
             Category    = $_.category
             Version     = $_.version
@@ -58,5 +66,5 @@ function Get-OpsModule {
             Path        = $_.path
             EntryCmd    = $_.entryCommand
         }
-    } | Format-Table -AutoSize
+    }
 }

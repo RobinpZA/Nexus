@@ -17,7 +17,11 @@ function Get-PortalRoute {
     [CmdletBinding()]
     param()
 
-    return @(
+    # Handlers are stateless scriptblocks (per-request data arrives via their argument), so the
+    # table is built once per module load instead of once per request.
+    if ($script:PortalRoutes) { return $script:PortalRoutes }
+
+    $script:PortalRoutes = @(
         # ── Static files ──
         @{ Pattern = '^/$'; Methods = @('GET')
            Handler = { param($R) Write-StaticFile -Context $R.Context -FilePath 'index.html' } }
@@ -50,8 +54,10 @@ function Get-PortalRoute {
            Handler = { param($R) Invoke-PortalCommand -Context $R.Context } }
 
         # ── Background jobs ──
-        @{ Pattern = '^/api/jobs/([a-f0-9]+)$'; Methods = @('GET')
-           Handler = { param($R) Get-PortalJobStatus -Context $R.Context -JobId $R.Match[1] } }
+        @{ Pattern = '^/api/jobs/([a-f0-9]+)$'; Methods = @('GET', 'DELETE')
+           Handler = { param($R)
+               if ($R.Context.Request.HttpMethod -eq 'DELETE') { Stop-PortalJob -Context $R.Context -JobId $R.Match[1] }
+               else { Get-PortalJobStatus -Context $R.Context -JobId $R.Match[1] } } }
 
         # ── Health ──
         @{ Pattern = '^/api/health$'; Methods = @('GET')
@@ -82,4 +88,5 @@ function Get-PortalRoute {
         @{ Pattern = '^/api/shutdown$'; Methods = @('POST')
            Handler = { param($R) Invoke-PortalShutdown -Context $R.Context } }
     )
+    return $script:PortalRoutes
 }

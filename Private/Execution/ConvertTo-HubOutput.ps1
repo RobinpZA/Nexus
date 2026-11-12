@@ -14,21 +14,71 @@ function ConvertTo-HubOutput {
         functions.
     .PARAMETER Records
         The records returned by Invoke()/EndInvoke() or read from a stream collection.
+    .PARAMETER MaxRows
+        Cap on the number of non-error records kept. 0 (the default) means no cap. Error
+        records are exempt from this cap so a failure is never hidden by it, but have their
+        own cap of 100 (the function cannot read settings): beyond that a single Warning
+        record says errors were suppressed, and the rest are counted in Total but dropped.
+        Every record's message is truncated to 4000 characters.
+    .PARAMETER Summary
+        A hashtable that receives (and accumulates across calls) Total, Kept and Truncated.
+        Pass the same hashtable on every call when records are shaped one at a time.
+        Total counts every record seen, before capping. Errors and ErrorsSuppressed track
+        the error cap.
     .EXAMPLE
         $output = @(ConvertTo-HubOutput -Records $ps.Invoke())
+    .EXAMPLE
+        $summary = @{}; $output = @(ConvertTo-HubOutput -Records $records -MaxRows 1000 -Summary $summary)
     #>
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)]
         [AllowNull()]
-        [object[]]$Records
+        [object[]]$Records,
+
+        [int]$MaxRows = 0,
+
+        [hashtable]$Summary
     )
 
+    if ($null -eq $Summary) { $Summary = @{} }
+    if (-not $Summary.ContainsKey('Total')) { $Summary['Total'] = 0 }
+    if (-not $Summary.ContainsKey('Kept')) { $Summary['Kept'] = 0 }
+    if (-not $Summary.ContainsKey('Truncated')) { $Summary['Truncated'] = $false }
+    if (-not $Summary.ContainsKey('Errors')) { $Summary['Errors'] = 0 }
+    if (-not $Summary.ContainsKey('ErrorsSuppressed')) { $Summary['ErrorsSuppressed'] = 0 }
+    $maxErrors = 100
+    $maxMessageLength = 4000
+
     $output = [System.Collections.Generic.List[PSCustomObject]]::new()
-    if (-not $Records) { return $output }
+    # A lone 0, $false or '' binds as a one-element array that is itself falsy.
+    if ($null -eq $Records -or @($Records).Count -eq 0) { return $output }
+
+    # Errors in this call beyond the cap; only known when records arrive in a batch.
+    $batchErrors = @($Records | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }).Count
+    $overCap = $batchErrors - [math]::Max(0, $maxErrors - $Summary['Errors'])
 
     foreach ($item in $Records) {
         if ($null -eq $item) { continue }
+        $Summary['Total'] = $Summary['Total'] + 1
+        $isError = $item -is [System.Management.Automation.ErrorRecord]
+        if ($isError) {
+            $Summary['Errors'] = $Summary['Errors'] + 1
+            if ($Summary['Errors'] -gt $maxErrors) {
+                $Summary['ErrorsSuppressed'] = $Summary['ErrorsSuppressed'] + 1
+                $Summary['Truncated'] = $true
+                if ($Summary['ErrorsSuppressed'] -eq 1) {
+                    $note = if ($overCap -gt 1) { "$overCap more errors suppressed" } else { "More errors suppressed (first $maxErrors shown)" }
+                    $output.Add([PSCustomObject]@{ stream = 'Warning'; message = $note })
+                }
+                continue
+            }
+        }
+        if ($MaxRows -gt 0 -and -not $isError -and $Summary['Kept'] -ge $MaxRows) {
+            $Summary['Truncated'] = $true
+            continue
+        }
+        if (-not $isError) { $Summary['Kept'] = $Summary['Kept'] + 1 }
         $stream = switch ($item.GetType().Name) {
             'ErrorRecord'       { 'Error' }
             'WarningRecord'     { 'Warning' }
@@ -47,6 +97,9 @@ function ConvertTo-HubOutput {
                     $entry.message = ($data.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
                 }
             }
+        }
+        if ($entry.message.Length -gt $maxMessageLength) {
+            $entry.message = $entry.message.Substring(0, $maxMessageLength) + '... (truncated)'
         }
         $output.Add($entry)
     }

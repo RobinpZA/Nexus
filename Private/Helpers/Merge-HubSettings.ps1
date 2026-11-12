@@ -19,8 +19,14 @@ function Merge-HubSettings {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object]$Current,
-        [Parameter(Mandatory)][object]$Incoming
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object]$Incoming
     )
+
+    # A scalar, array or null body would otherwise surface as a binding/property error.
+    if ($Incoming -isnot [System.Management.Automation.PSCustomObject] -and $Incoming -isnot [System.Collections.IDictionary]) {
+        throw 'Settings body must be a JSON object.'
+    }
+    if ($Incoming -is [System.Collections.IDictionary]) { $Incoming = [PSCustomObject]$Incoming }
 
     $schema = [ordered]@{
         defaultPort          = 'port'
@@ -29,17 +35,25 @@ function Merge-HubSettings {
         logLevel             = 'logLevel'
         logRetentionDays     = 'retention'
         scanOnStartup        = 'bool'
-        scanRoots            = 'stringArray'
+        allowUncScanRoots    = 'bool'
+        scanRoots            = 'pathArray'
         scanDepth            = 'depth'
         scanExclude          = 'stringArray'
         scanPublishedModules = 'bool'
-        publishedModulePaths = 'stringArray'
+        publishedModulePaths = 'pathArray'
         theme                = 'theme'
         maxRecentCommands    = 'count'
+        maxOutputRows        = 'rows'
     }
 
     # Deep clone so a validation failure part-way through leaves the caller's object untouched.
     $merged = $Current | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+
+    # Resolved up front so path validation sees the UNC setting from this same payload.
+    $allowUnc = $false
+    $uncProperty = $Incoming.PSObject.Properties['allowUncScanRoots']
+    if ($uncProperty) { $allowUnc = ConvertTo-HubBoolean -Value $uncProperty.Value -Key 'allowUncScanRoots' }
+    elseif ($Current.PSObject.Properties['allowUncScanRoots']) { $allowUnc = [bool]$Current.allowUncScanRoots }
 
     foreach ($key in $schema.Keys) {
         $property = $Incoming.PSObject.Properties[$key]
@@ -52,7 +66,19 @@ function Merge-HubSettings {
             'retention'   { ConvertTo-HubInteger -Value $value -Key $key -Minimum 0 -Maximum 3650 }
             'depth'       { ConvertTo-HubInteger -Value $value -Key $key -Minimum 0 -Maximum 10 }
             'count'       { ConvertTo-HubInteger -Value $value -Key $key -Minimum 1 -Maximum 1000 }
+            'rows'        { ConvertTo-HubInteger -Value $value -Key $key -Minimum 1 -Maximum 100000 }
             'stringArray' { @(@($value) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ }) }
+            'pathArray'   {
+                $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                $paths = [System.Collections.Generic.List[string]]::new()
+                foreach ($item in @($value)) {
+                    if ($null -eq $item) { continue }
+                    $check = Test-ScanRootPath -Path ([string]$item) -AllowUnc:$allowUnc
+                    if (-not $check.Valid) { throw "Invalid path for '$key': $($check.Reason)" }
+                    if ($seen.Add($check.Path)) { $paths.Add($check.Path) }
+                }
+                , @($paths)
+            }
             'logLevel'    {
                 if ([string]$value -notin @('Debug', 'Info', 'Warning', 'Error')) {
                     throw "Invalid value for 'logLevel': must be Debug, Info, Warning or Error."

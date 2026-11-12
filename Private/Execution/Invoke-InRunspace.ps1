@@ -84,8 +84,11 @@ function Get-ActiveContextJob {
         Returns the id of the job currently occupying a context, or $null.
     .DESCRIPTION
         A runspace runs one pipeline at a time and a process context has a single
-        command channel, so both are gated the same way. Stale pointers left by a
-        finished job are cleared here.
+        command channel, so both are gated the same way. A cancelled or timed-out
+        runspace job still occupies its context until its stop is reaped
+        (StopRequestedAt set, StopReaped not): the old pipeline is still running there,
+        so nothing else may Invoke() on that runspace. Reaping is attempted here too.
+        Stale pointers left by a finished job are cleared here.
     .PARAMETER ContextEntry
         The runspace or process context entry.
     .EXAMPLE
@@ -97,9 +100,14 @@ function Get-ActiveContextJob {
     if (-not $ContextEntry.ActiveAsyncJobId) { return $null }
 
     $activeJobId = [string]$ContextEntry.ActiveAsyncJobId
-    if ($script:BackgroundJobs -and $script:BackgroundJobs.ContainsKey($activeJobId) -and
-        $script:BackgroundJobs[$activeJobId].Status -eq 'running') {
-        return $activeJobId
+    if ($script:BackgroundJobs -and $script:BackgroundJobs.ContainsKey($activeJobId)) {
+        $activeJob = $script:BackgroundJobs[$activeJobId]
+        if ($activeJob.Status -eq 'running') { return $activeJobId }
+        if ($activeJob.StopRequestedAt -and -not $activeJob.StopReaped) {
+            Complete-PendingStop -Job $activeJob
+            if (-not $activeJob.StopReaped) { return $activeJobId }
+            if (-not $ContextEntry.ActiveAsyncJobId) { return $null }
+        }
     }
 
     $ContextEntry.ActiveAsyncJobId = $null
@@ -160,11 +168,14 @@ function Get-RunspaceInvokeScript {
     [CmdletBinding()]
     param()
 
-    # The binder is this module's own function text, not request data, so embedding
-    # it keeps the one-binder rule without widening what the script trusts.
-    $binder = "function ConvertTo-BoundParameter {`n$(${function:ConvertTo-BoundParameter})`n}"
+    # The binder and the output shaper are this module's own function text, not request
+    # data, so embedding them keeps the one-binder rule without widening what the script
+    # trusts. Shaping inside the runspace keeps that work off the listener thread.
+    $embedded = foreach ($name in 'ConvertTo-BoundParameter', 'ConvertTo-HubOutput', 'ConvertTo-HubOutputData', 'ConvertTo-HubCellValue') {
+        "function $name {`n$((Get-Item -LiteralPath "function:$name").ScriptBlock)`n}"
+    }
 
-    return 'param($CommandName, $Params, $ModuleName)' + "`n`n" + $binder + "`n" + @'
+    return 'param($CommandName, $Params, $ModuleName, $MaxRows, $Summary)' + "`n`n" + ($embedded -join "`n") + "`n" + @'
 
 # Get-Command treats -Module $null/'' as "no filter", not "match nothing" — an absent
 # ModuleName would silently reopen the exact hole this scoping exists to close.
@@ -175,8 +186,90 @@ if (-not $cmd) { throw "Command '$CommandName' is not exported by module '$Modul
 
 $bound = ConvertTo-BoundParameter -Command $cmd -Parameters $Params
 
-& $cmd @bound *>&1
+# Records are shaped (and capped) one at a time as they are produced, into the caller's
+# output collection, so everything emitted before a terminating error or a cancel survives.
+try {
+    & $cmd @bound *>&1 | ForEach-Object {
+        ConvertTo-HubOutput -Records (, $_) -MaxRows $MaxRows -Summary $Summary
+    }
+} catch {
+    ConvertTo-HubOutput -Records (, $_)
+}
 '@
+}
+
+function Get-RunspaceCommandOutput {
+    <#
+    .SYNOPSIS
+        Builds the output object for a runspace command from its collected, already shaped records.
+    .PARAMETER Output
+        The PSDataCollection the invoke script wrote shaped records into. May be $null.
+    .PARAMETER Summary
+        The shared hashtable ConvertTo-HubOutput filled in (Total, Kept, Truncated).
+    .PARAMETER ErrorMessage
+        An error raised outside the script's own try/catch (command not exported, host
+        failure). Appended as an Error record.
+    .EXAMPLE
+        $r = Get-RunspaceCommandOutput -Output $job.Output -Summary $job.Summary
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object]$Output,
+        [AllowNull()][hashtable]$Summary,
+        [string]$ErrorMessage
+    )
+
+    $records = [System.Collections.Generic.List[object]]::new()
+    if ($Output) {
+        # Index, don't enumerate: enumerating a PSDataCollection that is still being
+        # written to blocks until the pipeline completes it.
+        $count = $Output.Count
+        for ($i = 0; $i -lt $count; $i++) {
+            $item = $Output[$i]
+            if ($null -ne $item) { $records.Add($item) }
+        }
+    }
+    if ($ErrorMessage) { $records.Add([PSCustomObject]@{ stream = 'Error'; message = $ErrorMessage }) }
+
+    $total = if ($Summary -and $Summary.ContainsKey('Total')) { [int]$Summary['Total'] } else { 0 }
+    return [PSCustomObject]@{
+        output     = $records
+        success    = -not ($records | Where-Object { $_.stream -eq 'Error' })
+        truncated  = [bool]($Summary -and $Summary['Truncated'])
+        totalCount = [math]::Max($total, @($records | Where-Object { $_.stream -ne 'Error' }).Count)
+    }
+}
+
+function New-RunspaceInvocation {
+    <#
+    .SYNOPSIS
+        Creates a PowerShell instance loaded with the invoke script, plus the collections it fills.
+    .PARAMETER RsEntry
+        The runspace context entry.
+    .PARAMETER CommandName
+        The command to run.
+    .PARAMETER Parameters
+        Parameters to bind.
+    .PARAMETER ModuleEntry
+        The registry entry for the module.
+    .EXAMPLE
+        $inv = New-RunspaceInvocation -RsEntry $rs -CommandName 'Get-Thing' -Parameters @{} -ModuleEntry $mod
+    #>
+    [CmdletBinding()]
+    param([object]$RsEntry, [string]$CommandName, [hashtable]$Parameters, [object]$ModuleEntry)
+
+    $summary = [hashtable]::Synchronized(@{ Total = 0; Kept = 0; Truncated = $false })
+    $ps = [PowerShell]::Create()
+    $ps.Runspace = $RsEntry.Runspace
+    $null = $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).
+        AddArgument((Get-ModuleScopeName -ModuleEntry $ModuleEntry)).AddArgument((Get-MaxOutputRow)).AddArgument($summary)
+
+    $inputs = [System.Management.Automation.PSDataCollection[psobject]]::new()
+    $inputs.Complete()
+    return @{
+        PowerShell = $ps; Summary = $summary; Inputs = $inputs
+        Output = [System.Management.Automation.PSDataCollection[psobject]]::new()
+    }
 }
 
 function Invoke-RunspaceSync {
@@ -187,33 +280,30 @@ function Invoke-RunspaceSync {
 
     $startTime = Get-Date
 
-    $ps = [PowerShell]::Create()
-    $ps.Runspace = $RsEntry.Runspace
-    $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument((Get-ModuleScopeName -ModuleEntry $ModuleEntry)) | Out-Null
+    $inv = New-RunspaceInvocation -RsEntry $RsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry
+    $ps = $inv.PowerShell
 
     Write-HubLog -Level Info -Message "Executing in runspace (sync): $CommandName" -Source $ModuleEntry.name
-    $output = @()
+    $errorMessage = $null
     try {
-        $results = $ps.Invoke()
-        # Commands run with *>&1, so classify by record type — Streams.Error stays empty.
-        $output += @(ConvertTo-HubOutput -Records $results)
-        $output += @(ConvertTo-HubOutput -Records @($ps.Streams.Error))
-        $output += @(ConvertTo-HubOutput -Records @($ps.Streams.Warning))
-        $output += @(ConvertTo-HubOutput -Records @($ps.Streams.Information))
-        $success = -not ($output | Where-Object { $_.stream -eq 'Error' })
-        $verb = Get-CommandVerb -CommandName $CommandName
-        if ($verb -eq 'Connect' -and $success) { $RsEntry.Connected = $true }
-        if ($verb -eq 'Disconnect') { $RsEntry.Connected = $false }
+        # Output streams into $inv.Output, so records produced before a terminating
+        # error are still there when Invoke throws.
+        $null = $ps.Invoke($inv.Inputs, $inv.Output)
     } catch {
-        $output += [PSCustomObject]@{ stream = 'Error'; message = $_.Exception.Message }
-        $success = $false
+        $errorMessage = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
     } finally { $ps.Dispose() }
+
+    $built = Get-RunspaceCommandOutput -Output $inv.Output -Summary $inv.Summary -ErrorMessage $errorMessage
+    $verb = Get-CommandVerb -CommandName $CommandName
+    if ($verb -eq 'Connect' -and $built.success) { $RsEntry.Connected = $true }
+    if ($verb -eq 'Disconnect') { $RsEntry.Connected = $false }
 
     $RsEntry.LastUsed = Get-Date
     $duration = ((Get-Date) - $startTime).TotalMilliseconds
     return [PSCustomObject]@{
-        success = $success; module = $ModuleEntry.name; command = $CommandName
-        durationMs = [math]::Round($duration, 0); output = $output
+        success = $built.success; module = $ModuleEntry.name; command = $CommandName
+        durationMs = [math]::Round($duration, 0); output = @($built.output)
+        truncated = $built.truncated; totalCount = $built.totalCount
     }
 }
 
@@ -228,14 +318,13 @@ function Start-RunspaceAsync {
     Remove-CompletedJob
 
     $jobId = [guid]::NewGuid().ToString('N').Substring(0, 12)
-    $ps = [PowerShell]::Create()
-    $ps.Runspace = $RsEntry.Runspace
+    $inv = $null
 
     try {
-        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument((Get-ModuleScopeName -ModuleEntry $ModuleEntry)) | Out-Null
-        $asyncResult = $ps.BeginInvoke()
+        $inv = New-RunspaceInvocation -RsEntry $RsEntry -CommandName $CommandName -Parameters $Parameters -ModuleEntry $ModuleEntry
+        $asyncResult = $inv.PowerShell.BeginInvoke($inv.Inputs, $inv.Output)
     } catch {
-        $ps.Dispose()
+        if ($inv) { $inv.PowerShell.Dispose() }
         return [PSCustomObject]@{
             success = $false
             module = $ModuleEntry.name
@@ -247,7 +336,8 @@ function Start-RunspaceAsync {
 
     $script:BackgroundJobs[$jobId] = @{
         Id = $jobId; Module = $ModuleEntry.name; Command = $CommandName; Mode = 'runspace'
-        PowerShell = $ps; AsyncResult = $asyncResult; StartedAt = Get-Date
+        PowerShell = $inv.PowerShell; AsyncResult = $asyncResult; StartedAt = Get-Date
+        Output = $inv.Output; Summary = $inv.Summary
         TimeoutAt = (Get-Date).AddMinutes(10)
         Status = 'running'; Result = $null; Context = $RsEntry
     }
