@@ -19,7 +19,7 @@ BeforeAll {
     $script:Invoke = {
         param([scriptblock]$Handler, [hashtable]$Headers = @{})
         $listener = [System.Net.HttpListener]::new()
-        $port = Get-Random -Minimum 20000 -Maximum 40000
+        $port = & { $p = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0); $p.Start(); $n = $p.LocalEndpoint.Port; $p.Stop(); $n }
         $listener.Prefixes.Add("http://127.0.0.1:$port/")
         $listener.Start()
         $client = [System.Net.Http.HttpClient]::new()

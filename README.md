@@ -83,7 +83,8 @@ $modulePath = Join-Path $nexusRoot "Nexus.psd1"
 if (Test-Path $modulePath) {
 	$alreadyRunning = $false
 	try {
-		$null = Invoke-RestMethod -Uri "http://localhost:8090/api/health" -TimeoutSec 1
+		# 127.0.0.1, not localhost: the listener only binds 127.0.0.1.
+		$null = Invoke-RestMethod -Uri "http://127.0.0.1:8090/api/health" -TimeoutSec 1
 		$alreadyRunning = $true
 	} catch {
 		$alreadyRunning = $false
@@ -113,7 +114,9 @@ Paste the same auto-start block into that profile.
 
 - `Start-Nexus` is a blocking listener — calling it directly occupies your current terminal until you stop it. The auto-start block above runs it via `Start-Process pwsh -WindowStyle Hidden ...` instead, so it launches in a separate hidden process and your terminal stays usable.
 - Remove `-NoBrowser` if you want the portal tab to open automatically on startup, or run `Open-Nexus` when you want the portal.
-- If you changed `defaultPort` in settings, update the health URL accordingly.
+- Use `127.0.0.1` (not `localhost`) in the health probe: the listener binds 127.0.0.1 only, so a `localhost` probe never matches and would start a duplicate instance.
+- `Start-Nexus` tries `defaultPort` first and falls back to scanning `portRange` when that port is taken. `Enable-NexusAutoStart` probes every port in `portRange`; if you change either setting in the hand-written block above, update the health URL to match.
+- `Stop-Nexus` also stops an autostarted instance: when no listener runs in the current session it reads `session.json`, asks the running instance to shut down via `/api/shutdown`, and falls back to stopping the recorded `pwsh` process.
 
 ## Session Token
 
@@ -151,16 +154,38 @@ GET /api/jobs/{id}
 | Command | Description |
 |---|---|
 | `Start-Nexus` | Start the local Nexus HTTP listener and portal |
-| `Stop-Nexus` | Stop the running Nexus listener |
+| `Stop-Nexus` | Stop the running Nexus listener, including an autostarted instance in another process |
 | `Open-Nexus` | Open the running portal in the browser with a valid session |
 | `Enable-NexusAutoStart` | Add/update a profile block to auto-start Nexus when PowerShell launches |
-| `Get-OpsModule` | List modules in the registry |
+| `Get-OpsModule` | List modules in the registry (pipeline-friendly `Nexus.Module` objects) |
 | `Import-OpsModule` | Import a registered module |
-| `Get-OpsCommand` | List and search commands across registered modules |
+| `Get-OpsCommand` | List and search commands across registered modules (pipeline-friendly `Nexus.Command` objects) |
 | `Invoke-OpsCommand` | Invoke a registered command with parameters |
 | `Register-OpsModule` | Register a module path and metadata |
 | `Unregister-OpsModule` | Remove a module from the registry |
-| `Update-OpsRegistry` | Scan and synchronize registry entries |
+| `Update-OpsRegistry` | Scan and synchronize registry entries; supports `-WhatIf` |
+
+### Update-OpsRegistry
+
+Scans the configured `scanRoots` and synchronises the registry: new modules are added,
+known ones refreshed, and entries whose path has vanished are marked `missing`.
+
+```powershell
+Update-OpsRegistry                                  # scan the scanRoots setting
+Update-OpsRegistry -ScanRoots C:\Modules            # scan these folders instead
+Update-OpsRegistry -IncludePublished                # also scan installed (PSModulePath) modules
+Update-OpsRegistry -WhatIf                          # scan and report, do not write the registry
+```
+
+| Parameter | Description |
+|---|---|
+| `-ScanRoots` | Folders to scan instead of the `scanRoots` setting |
+| `-IncludePublished` | Include installed modules even when `scanPublishedModules` is off |
+| `-WhatIf` / `-Confirm` | Standard `ShouldProcess` switches guarding the registry write |
+
+`Get-OpsModule` and `Get-OpsCommand` return objects (types `Nexus.Module` and
+`Nexus.Command`), so they can be piped, for example
+`Get-OpsModule | Where-Object Status -eq 'missing'`.
 
 ## Configuration
 
@@ -184,10 +209,11 @@ Local overrides are supported and take precedence when present:
 
 Common defaults include:
 
-- `defaultPort`: `8090`
-- `portRange`: `8090-8099`
+- `defaultPort`: `8090`. `Start-Nexus` tries this port first when no `-Port` is passed.
+- `portRange`: `8090-8099`. Scanned for a free port when `defaultPort` is unset (0) or already in use.
 - `openBrowserOnStart`: `true`
 - `scanOnStartup`: `false`
+- `allowUncScanRoots`: `false`. Scan roots (`scanRoots`, `publishedModulePaths`) must be existing, absolute, local folders. UNC paths (`\server\share`) are rejected unless this is `true`; device paths (`\?\`, `\.\`) are always rejected.
 
 ## Build, Test, and Analyze
 

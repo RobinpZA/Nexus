@@ -2,6 +2,11 @@ function Import-OpsModule {
     <#
     .SYNOPSIS
         Imports a registered module by its friendly name.
+    .DESCRIPTION
+        Looks the name up in the Nexus registry (enabled entries only) and imports the module
+        through the same path the portal uses, so process-isolated modules are handled
+        correctly. Prints a short confirmation on success and writes an error when the
+        module is unknown, disabled or fails to import.
     .PARAMETER Name
         The registered module name (as it appears in modules.json).
     .EXAMPLE
