@@ -23,5 +23,6 @@
   "theme": "dark",
   "favouriteCommands": [],
   "recentCommands": [],
-  "maxRecentCommands": 20
+  "maxRecentCommands": 20,
+  "maxOutputRows": 1000
 }

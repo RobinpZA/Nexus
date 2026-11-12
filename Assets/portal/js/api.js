@@ -76,6 +76,16 @@ const API = {
         });
     },
 
+    // ── Jobs ──
+    async getJob(jobId) {
+        return this._fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+    },
+
+    // 200 { success, status: "cancelled" }; 404 unknown id; 409 already finished.
+    async cancelJob(jobId) {
+        return this._fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    },
+
     // ── Health ──
     async getHealth() {
         return this._fetch('/api/health');

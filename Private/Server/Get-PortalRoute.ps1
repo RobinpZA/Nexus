@@ -54,8 +54,10 @@ function Get-PortalRoute {
            Handler = { param($R) Invoke-PortalCommand -Context $R.Context } }
 
         # ── Background jobs ──
-        @{ Pattern = '^/api/jobs/([a-f0-9]+)$'; Methods = @('GET')
-           Handler = { param($R) Get-PortalJobStatus -Context $R.Context -JobId $R.Match[1] } }
+        @{ Pattern = '^/api/jobs/([a-f0-9]+)$'; Methods = @('GET', 'DELETE')
+           Handler = { param($R)
+               if ($R.Context.Request.HttpMethod -eq 'DELETE') { Stop-PortalJob -Context $R.Context -JobId $R.Match[1] }
+               else { Get-PortalJobStatus -Context $R.Context -JobId $R.Match[1] } } }
 
         # ── Health ──
         @{ Pattern = '^/api/health$'; Methods = @('GET')
