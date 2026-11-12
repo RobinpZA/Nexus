@@ -323,7 +323,7 @@ Describe 'Phase 4: maxOutputRows' {
     It 'Always keeps error records even when the cap is reached' {
         $out = & $script:Module {
             $summary = @{}
-            $records = @('a', 'b', 'c', (Write-Error 'late' 2>&1))
+            $records = @('a', 'b', 'c', [System.Management.Automation.ErrorRecord]::new([System.Exception]::new('late'), 'late', 'NotSpecified', $null))
             [PSCustomObject]@{
                 Output  = @(ConvertTo-HubOutput -Records $records -MaxRows 2 -Summary $summary)
                 Summary = $summary
