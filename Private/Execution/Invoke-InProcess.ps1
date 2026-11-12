@@ -11,28 +11,39 @@ function Send-ProcessRequest {
         The registry entry, used to recreate the context if needed.
     .PARAMETER Request
         The request payload written as command.json.
+    .PARAMETER RequestId
+        Correlation id written into command.json. The worker echoes it in response.json
+        and Receive-ProcessResponse discards any response carrying a different one.
     .EXAMPLE
-        $ctx = Send-ProcessRequest -ProcessEntry $p -ModuleEntry $mod -Request @{ command = 'Get-Thing'; parameters = @{} }
+        $ctx = Send-ProcessRequest -ProcessEntry $p -ModuleEntry $mod -RequestId $id -Request @{ command = 'Get-Thing'; parameters = @{} }
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object]$ProcessEntry,
         [Parameter(Mandatory)][object]$ModuleEntry,
-        [Parameter(Mandatory)][hashtable]$Request
+        [Parameter(Mandatory)][hashtable]$Request,
+        [Parameter(Mandatory)][string]$RequestId
     )
 
     $proc = $ProcessEntry.Process
     if (-not $proc -or $proc.HasExited) {
         Write-HubLog -Level Warning -Message "Process dead for $($ModuleEntry.name) — recreating"
         $script:ModuleRunspaces.Remove($ModuleEntry.name)
-        $ProcessEntry = Get-ModuleRunspace -ModuleEntry $ModuleEntry -Force
+        try {
+            $ProcessEntry = Get-ModuleRunspace -ModuleEntry $ModuleEntry -Force
+        } catch {
+            Write-HubLog -Level Warning -Message "Could not recreate process for $($ModuleEntry.name): $($_.Exception.Message)"
+            return $null
+        }
         if (-not $ProcessEntry -or -not $ProcessEntry.Process) { return $null }
     }
 
     # Drop a stale response from a previous, abandoned request.
     if (Test-Path $ProcessEntry.ResponseFile) { Remove-Item $ProcessEntry.ResponseFile -Force -ErrorAction SilentlyContinue }
 
-    Write-AtomicFile -Path $ProcessEntry.CommandFile -Value ($Request | ConvertTo-Json -Compress -Depth 5)
+    $payload = $Request.Clone()
+    $payload.requestId = $RequestId
+    Write-AtomicFile -Path $ProcessEntry.CommandFile -Value ($payload | ConvertTo-Json -Compress -Depth 5)
     return $ProcessEntry
 }
 
@@ -42,14 +53,20 @@ function Receive-ProcessResponse {
         Reads a completed response from a process context, if one is ready.
     .DESCRIPTION
         Returns $null while the response file is absent or still being written — the
-        caller polls again rather than blocking.
+        caller polls again rather than blocking. A response whose requestId is not the one
+        being waited for belongs to an abandoned request; it is deleted and ignored.
     .PARAMETER ProcessEntry
         The process context entry.
+    .PARAMETER RequestId
+        The id of the request being waited on.
     .EXAMPLE
-        $response = Receive-ProcessResponse -ProcessEntry $ctx
+        $response = Receive-ProcessResponse -ProcessEntry $ctx -RequestId $id
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$ProcessEntry)
+    param(
+        [Parameter(Mandatory)][object]$ProcessEntry,
+        [Parameter(Mandatory)][string]$RequestId
+    )
 
     if (-not (Test-Path $ProcessEntry.ResponseFile)) { return $null }
 
@@ -63,6 +80,10 @@ function Receive-ProcessResponse {
     }
 
     Remove-Item $ProcessEntry.ResponseFile -Force -ErrorAction SilentlyContinue
+    if ([string]$parsed.requestId -ne $RequestId) {
+        Write-HubLog -Level Debug -Message "Discarded response for a different request (got '$($parsed.requestId)', waiting for '$RequestId')"
+        return $null
+    }
     return $parsed
 }
 
@@ -162,7 +183,8 @@ function Start-ProcessAsync {
 
     Remove-CompletedJob
 
-    $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -Request @{
+    $requestId = [guid]::NewGuid().ToString('N')
+    $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -RequestId $requestId -Request @{
         command = $CommandName; parameters = $Parameters
     }
     if (-not $ProcessEntry) {
@@ -174,7 +196,7 @@ function Start-ProcessAsync {
 
     $jobId = [guid]::NewGuid().ToString('N').Substring(0, 12)
     $script:BackgroundJobs[$jobId] = @{
-        Id = $jobId; Module = $ModuleEntry.name; Command = $CommandName; Mode = 'process'
+        Id = $jobId; RequestId = $requestId; Module = $ModuleEntry.name; Command = $CommandName; Mode = 'process'
         Context = $ProcessEntry; StartedAt = Get-Date; TimeoutAt = (Get-Date).AddMinutes(10)
         Status = 'running'; Result = $null
     }
@@ -219,7 +241,8 @@ function Invoke-InProcess {
 
     $startTime = Get-Date
 
-    $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -Request @{
+    $requestId = [guid]::NewGuid().ToString('N')
+    $ProcessEntry = Send-ProcessRequest -ProcessEntry $ProcessEntry -ModuleEntry $ModuleEntry -RequestId $requestId -Request @{
         command = $CommandName; parameters = $Parameters
     }
     if (-not $ProcessEntry) {
@@ -241,7 +264,7 @@ function Invoke-InProcess {
             }
         }
 
-        $response = Receive-ProcessResponse -ProcessEntry $ProcessEntry
+        $response = Receive-ProcessResponse -ProcessEntry $ProcessEntry -RequestId $requestId
         if ($response) {
             $result = ConvertFrom-ProcessResponse -Response $response -ModuleName $ModuleEntry.name -CommandName $CommandName `
                 -DurationMs ([math]::Round(((Get-Date) - $startTime).TotalMilliseconds, 0))
@@ -252,6 +275,9 @@ function Invoke-InProcess {
         Start-Sleep -Milliseconds 200
     }
 
+    # The worker is still running the abandoned command; drop the whole context so its
+    # late response can never be read by a later request.
+    Remove-ModuleContext -Context $ProcessEntry
     return [PSCustomObject]@{
         success = $false; module = $ModuleEntry.name; command = $CommandName
         durationMs = [math]::Round(((Get-Date) - $startTime).TotalMilliseconds, 0)

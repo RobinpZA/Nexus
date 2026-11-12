@@ -51,9 +51,13 @@
         }
     }
 
+    # The loaded module is named after its manifest, which can differ from the friendly
+    # name it was registered under.
+    $scopeName = Get-ModuleScopeName -ModuleEntry $ModuleEntry
+
     # If we couldn't read the manifest, fall back to Get-Command scoped to the module
     if ($allowedCommands.Count -eq 0) {
-        $allowedCommands = @(Get-Command -Module $ModuleEntry.name -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+        $allowedCommands = @(Get-Command -Module $scopeName -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
     }
 
     if ($CommandName -notin $allowedCommands) {
@@ -66,15 +70,14 @@
 
     # ── 3. Resolve command via module-qualified lookup ──
     # This ensures we get the command FROM this specific module, not a global one with the same name
-    $cmd = Get-Command -Name $CommandName -Module $ModuleEntry.name -ErrorAction SilentlyContinue
+    # No unscoped fallback: an unscoped lookup would also resolve built-in cmdlets.
+    $cmd = $null
+    $loaded = @(Get-Module -Name $scopeName)[0]
+    if ($loaded) { $cmd = $loaded.ExportedCommands[$CommandName] }
     if (-not $cmd) {
-        # Fallback: try resolving without module scope (some modules register commands differently)
-        $cmd = Get-Command -Name $CommandName -ErrorAction SilentlyContinue
-        if (-not $cmd -or ($cmd.Module -and $cmd.Module.Name -ne $ModuleEntry.name)) {
-            return [PSCustomObject]@{
-                success = $false; module = $ModuleEntry.name; command = $CommandName; durationMs = 0
-                output = @([PSCustomObject]@{ stream = 'Error'; message = "Command not found in module: $CommandName" })
-            }
+        return [PSCustomObject]@{
+            success = $false; module = $ModuleEntry.name; command = $CommandName; durationMs = 0
+            output = @([PSCustomObject]@{ stream = 'Error'; message = "Command not found in module: $CommandName" })
         }
     }
 

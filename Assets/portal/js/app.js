@@ -320,6 +320,7 @@ App.runCommand = async function(mn, cn) {
 
 App.pollJob = async function(jobId, statusEl, outputEl) {
     let polls = 0;
+    let failures = 0;  // consecutive failed polls
     const maxPoll = 600;  // 10 min timeout
 
     while (polls < maxPoll) {
@@ -328,6 +329,7 @@ App.pollJob = async function(jobId, statusEl, outputEl) {
 
         try {
             const data = await API._fetch(`/api/jobs/${jobId}`);
+            failures = 0;
 
             if (data.status === 'running') {
                 if (statusEl) statusEl.textContent = `Running... ${data.elapsed || polls}s`;
@@ -337,7 +339,8 @@ App.pollJob = async function(jobId, statusEl, outputEl) {
             // Completed or failed
             return data;
         } catch (e) {
-            if (polls > 5) {
+            failures++;
+            if (failures >= 5) {
                 return { success: false, output: [{ stream: 'Error', message: `Lost connection to job: ${e.message}` }], durationMs: 0 };
             }
         }

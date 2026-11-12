@@ -39,7 +39,13 @@ function Invoke-InRunspace {
         [switch]$Async
     )
 
-    $rsEntry = Get-ModuleRunspace -ModuleEntry $ModuleEntry
+    try { $rsEntry = Get-ModuleRunspace -ModuleEntry $ModuleEntry }
+    catch {
+        return [PSCustomObject]@{
+            success = $false; module = $ModuleEntry.name; command = $CommandName; durationMs = 0
+            output = @([PSCustomObject]@{ stream = 'Error'; message = $_.Exception.Message })
+        }
+    }
     if (-not $rsEntry) {
         return [PSCustomObject]@{
             success = $false; module = $ModuleEntry.name; command = $CommandName; durationMs = 0
@@ -149,7 +155,7 @@ function Get-RunspaceInvokeScript {
         the lookup here means only commands this module actually exports can ever be
         resolved, independent of what the manifest claims.
     .EXAMPLE
-        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument($ModuleName)
+        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument((Get-ModuleScopeName -ModuleEntry $mod))
     #>
     [CmdletBinding()]
     param()
@@ -183,7 +189,7 @@ function Invoke-RunspaceSync {
 
     $ps = [PowerShell]::Create()
     $ps.Runspace = $RsEntry.Runspace
-    $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument($ModuleEntry.name) | Out-Null
+    $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument((Get-ModuleScopeName -ModuleEntry $ModuleEntry)) | Out-Null
 
     Write-HubLog -Level Info -Message "Executing in runspace (sync): $CommandName" -Source $ModuleEntry.name
     $output = @()
@@ -226,7 +232,7 @@ function Start-RunspaceAsync {
     $ps.Runspace = $RsEntry.Runspace
 
     try {
-        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument($ModuleEntry.name) | Out-Null
+        $ps.AddScript((Get-RunspaceInvokeScript)).AddArgument($CommandName).AddArgument($Parameters).AddArgument((Get-ModuleScopeName -ModuleEntry $ModuleEntry)) | Out-Null
         $asyncResult = $ps.BeginInvoke()
     } catch {
         $ps.Dispose()

@@ -92,12 +92,19 @@ function Start-Nexus {
     # Blocking request loop
     try {
         while ($server.Listener.IsListening -and -not $script:StopListener) {
+            $context = $null
             try {
                 $context = $server.Listener.GetContext()
                 Invoke-RequestRouter -Context $context
             } catch [System.Net.HttpListenerException] {
                 if ($script:StopListener) { break }
                 Write-HubLog -Level Warning -Message "Listener exception: $($_.Exception.Message)"
+            } catch {
+                # A single bad request must never take the server down.
+                try { Write-HubLog -Level Warning -Message "Request failed, continuing: $($_.Exception.Message)" } catch { $null = $_ }
+                if ($context) {
+                    try { $context.Response.Abort() } catch { $null = $_ }
+                }
             }
         }
     } finally {
